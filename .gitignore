@@ -38,5 +38,10 @@ env/
 
 # Logs
 *.log
+logs/
+*.log.*
+
+# Gunicorn
+*.pid
 
 

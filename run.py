@@ -10,7 +10,7 @@ import sys
 project_root = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, project_root)
 
-from app import app
+from app.app import app
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 3000))

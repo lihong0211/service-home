@@ -153,24 +153,44 @@ def list_words():
         
         # 获取分页数据
         offset = (page - 1) * size
-        words_list = Words.builder_query(criterion).offset(offset).limit(size).all()
+        # 只查询实际存在的字段，避免查询不存在的 create_at、update_at、deleted_at
+        words_list = (
+            Words.builder_query(criterion)
+            .with_entities(
+                Words.id,
+                Words.word,
+                Words.type,
+                Words.meaning,
+                Words.root,
+                Words.root_case,
+                Words.affix,
+                Words.affix_case,
+                Words.collocation,
+                Words.collocation_meaning,
+                Words.sentence,
+                Words.mastered
+            )
+            .offset(offset)
+            .limit(size)
+            .all()
+        )
         
-        # 处理数据
+        # 处理数据（with_entities 返回元组）
         data_list = []
         for item in words_list:
             data_list.append({
-                'id': item.id,
-                'word': item.word,
-                'type': item.type.split(',') if item.type else [],
-                'meaning': item.meaning,
-                'root': item.root,
-                'root_case': item.root_case,
-                'affix': item.affix,
-                'affix_case': item.affix_case,
-                'collocation': item.collocation,
-                'collocation_meaning': item.collocation_meaning,
-                'sentence': item.sentence,
-                'mastered': item.mastered or 0,
+                'id': item[0],
+                'word': item[1],
+                'type': item[2].split(',') if item[2] else [],
+                'meaning': item[3],
+                'root': item[4],
+                'root_case': item[5],
+                'affix': item[6],
+                'affix_case': item[7],
+                'collocation': item[8],
+                'collocation_meaning': item[9],
+                'sentence': item[10],
+                'mastered': item[11] or 0 if item[11] is not None else 0,
             })
         
         return jsonify({

@@ -47,7 +47,6 @@ def limit(table, page_num, page_size, query=None):
     
     offset = (page_num - 1) * page_size
     result_sql = f"SELECT * FROM {table} {sql}LIMIT {offset},{page_size}"
-    print(result_sql)
     return result_sql
 
 

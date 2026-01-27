@@ -18,8 +18,10 @@ class MyModel:
     __tablename__ = "--"
     deleted_at_value = None
     id = Column(INTEGER(11), primary_key=True)
-    create_at = Column(DateTime(), default=get_datetime_now, comment="创建时间")
-    update_at = Column(DateTime(), default=get_datetime_now, onupdate=get_datetime_now, comment="修改时间")
+    # 注意：如果数据库表中没有这些字段，需要设置为可选或使用 name 参数映射
+    # 如果表中确实没有这些字段，可以注释掉或设置为可选
+    create_at = Column(DateTime(), nullable=True, default=get_datetime_now, comment="创建时间")
+    update_at = Column(DateTime(), nullable=True, default=get_datetime_now, onupdate=get_datetime_now, comment="修改时间")
     deleted_at = Column(DateTime(), nullable=True, name='deleted_at', comment="删除时间")
 
     @classmethod
@@ -192,5 +194,6 @@ class MyModel:
     def count(cls, criterion=None):
         """统计数量"""
         query = cls.builder_query(criterion)
-        return query.count()
+        # 使用 with_entities 只查询 id，避免查询不存在的字段
+        return query.with_entities(cls.id).count()
 
