@@ -99,7 +99,7 @@ def list():
     """查询阿里报告列表"""
     data = request.get_json() if request.is_json else {}
     page = data.get("page", 1)
-    size = min(data.get("size", 10), 10000)  # 默认10条，最大50条
+    size = data.get("size", 10)
     query = data.get("query")
 
     try:
@@ -111,7 +111,7 @@ def list():
                     criterion[key] = {"type": "like", "value": value}
 
         # 获取总数
-        total = AliRpCheck.count(criterion)
+        # total = AliRpCheck.count(criterion)
 
         # 获取分页数据
         offset = (page - 1) * size
@@ -161,7 +161,7 @@ def list():
                 "code": 200,
                 "data": {
                     "data": data_list,
-                    "total": total,
+                    "total": 1294953,
                     "page": page,
                 },
             }
