@@ -3,11 +3,17 @@
 主应用文件
 """
 from flask import jsonify
+from flask_sock import Sock
 from app.app import app, db
 from routes import api_bp
 
 # 注册蓝图
 app.register_blueprint(api_bp)
+
+# WebSocket（实时 STT）
+sock = Sock(app)
+from service.ai.stt import register_stt_ws
+register_stt_ws(sock)
 
 # 初始化数据库表
 with app.app_context():

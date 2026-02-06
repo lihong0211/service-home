@@ -6,3 +6,23 @@ python-dotenv==1.0.0
 
 # Production WSGI Server
 gunicorn==21.2.0
+
+# AI
+faster-whisper>=1.0.0
+flask-sock>=0.7.0
+edge-tts>=6.1.0
+# 文生图（Stable Diffusion XL，diffusers）
+torch>=2.0
+torchvision
+diffusers>=0.30.0
+transformers>=4.46.0
+accelerate
+qwen-vl-utils
+av
+dashscope>=1.25.0
+qwen-agent>=0.0.33
+python-dateutil==2.8.2
+mcp>=1.26.0
+# 阿里云 DNS SDK（PyPI 包名与 import 名不同）
+aliyun-python-sdk-core>=1.2.11
+aliyun-python-sdk-alidns>=3.0.0

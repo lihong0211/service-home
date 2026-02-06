@@ -1,0 +1,31 @@
+FROM deepseek-r1:1.5b
+
+# 系统提示词（针对小模型优化，简洁明确）
+SYSTEM """你是运行在 Apple Silicon Mac 上的 DeepSeek-R1 1.5B 轻量级AI助手。
+擅长日常对话、简单问答和基础任务。
+请提供简洁、自然、有帮助的回答。
+对于复杂问题，请说明能力限制。"""
+
+# 性能优化设置
+PARAMETER num_thread 6
+PARAMETER num_batch 8
+PARAMETER num_ctx 2048
+PARAMETER num_predict 384
+
+# 对话质量优化
+PARAMETER temperature 0.45
+PARAMETER top_p 0.88
+PARAMETER top_k 35
+
+# 重复控制
+PARAMETER repeat_penalty 1.18
+PARAMETER repeat_last_n 48
+PARAMETER frequency_penalty 0.08
+PARAMETER presence_penalty 0.06
+
+# 高级推理设置
+PARAMETER mirostat 0
+PARAMETER seed -1
+
+# 输出格式
+PARAMETER stop "</s>"

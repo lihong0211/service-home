@@ -43,5 +43,6 @@ logs/
 
 # Gunicorn
 *.pid
-
+# Models
+models/
 

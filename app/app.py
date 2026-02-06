@@ -44,6 +44,8 @@ app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 app.config["SQLALCHEMY_ECHO"] = False
 app.config["JSONIFY_MIMETYPE"] = "application/json;charset=utf-8"
 app.config["JSON_AS_ASCII"] = False
+# 识图接口会传 base64 大 body，放宽限制（默认约 1MB）
+app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
 
 # 初始化数据库
 db = SQLAlchemy(app)

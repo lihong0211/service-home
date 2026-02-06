@@ -51,6 +51,15 @@ from service.peach.plugin_statistic import (
     detail as plugin_statistics_detail,
 )
 
+from service.ai.chat import chat as chat, ocr_chat as ocr_chat
+from service.ai.stt import (
+    transcribe as stt_transcribe,
+    transcribe_stream as stt_transcribe_stream,
+)
+from service.ai.tts import speech as tts_speech
+from service.ai.image_gen import generate as image_generate
+from service.ai.video_undstanding import video_understand
+
 # 创建蓝图
 api_bp = Blueprint("api", __name__)
 
@@ -160,5 +169,49 @@ api_bp.add_url_rule(
     "/peach/plugin-statistics/detail",
     "plugin_statistics_detail",
     plugin_statistics_detail,
+    methods=["POST"],
+)
+
+
+api_bp.add_url_rule(
+    "/ai/chat",
+    "chat",
+    chat,
+    methods=["POST"],
+)
+api_bp.add_url_rule(
+    "/ai/orc",
+    "ocr_chat",
+    ocr_chat,
+    methods=["POST"],
+)
+api_bp.add_url_rule(
+    "/ai/stt/transcribe",
+    "stt_transcribe",
+    stt_transcribe,
+    methods=["POST"],
+)
+api_bp.add_url_rule(
+    "/ai/stt/transcribe_stream",
+    "stt_transcribe_stream",
+    stt_transcribe_stream,
+    methods=["POST"],
+)
+api_bp.add_url_rule(
+    "/ai/tts",
+    "tts_speech",
+    tts_speech,
+    methods=["POST"],
+)
+api_bp.add_url_rule(
+    "/ai/image/generate",
+    "image_generate",
+    image_generate,
+    methods=["POST"],
+)
+api_bp.add_url_rule(
+    "/ai/video/understand",
+    "video_understand",
+    video_understand,
     methods=["POST"],
 )
