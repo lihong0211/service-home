@@ -11,7 +11,8 @@ bind = f"0.0.0.0:{os.environ.get('PORT', 3000)}"
 workers = multiprocessing.cpu_count() * 2 + 1  # 推荐的工作进程数
 worker_class = "sync"
 worker_connections = 1000
-timeout = 30
+# 上传+解析+向量化可能较久，与 Nginx proxy_read_timeout 对齐
+timeout = int(os.environ.get("GUNICORN_TIMEOUT", 300))
 keepalive = 2
 
 # 日志配置
@@ -34,5 +35,5 @@ limit_request_field_size = 8190
 # 预加载应用（节省内存，但可能导致 worker 间数据不一致）
 preload_app = False
 
-# 优雅重启
-graceful_timeout = 30
+# 优雅重启（worker 处理完当前请求后再退出）
+graceful_timeout = 60

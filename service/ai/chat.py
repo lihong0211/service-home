@@ -55,11 +55,11 @@ def chat():
     """
     data = request.get_json(silent=True) or {}
     if not data and request.get_data():
-        return jsonify({"code": 400, "msg": "Invalid JSON or body too large"}), 400
+        raise ValueError("Invalid JSON or body too large")
 
     messages = data.get("messages")
     if not messages or not isinstance(messages, list):
-        return jsonify({"code": 400, "msg": "Missing or invalid messages"}), 400
+        raise ValueError("Missing or invalid messages")
 
     model = data.get("model") or DEFAULT_MODEL
     stream = data.get("stream", False)
@@ -77,21 +77,21 @@ def chat():
         return jsonify({"code": 503, "msg": "Ollama service not running"}), 503
     except requests.exceptions.Timeout:
         return jsonify({"code": 504, "msg": "Ollama request timeout"}), 504
-    except Exception as e:
-        return jsonify({"code": 500, "msg": str(e)}), 500
+    except Exception:
+        raise
 
 
 def ocr_chat():
     """专用 OCR 接口：固定 OCR_MODEL，只收图。请求：{ "images": ["<base64>"] 或 "image": "<base64>", "stream": true, "options": {} }"""
     data = request.get_json(silent=True) or {}
     if not data and request.get_data():
-        return jsonify({"code": 400, "msg": "Invalid JSON or body too large"}), 400
+        raise ValueError("Invalid JSON or body too large")
 
     images = data.get("images")
     if images is None and data.get("image") is not None:
         images = [data["image"]] if isinstance(data["image"], str) else data["image"]
     if not images:
-        return jsonify({"code": 400, "msg": "Missing images or image"}), 400
+        raise ValueError("Missing images or image")
     if not isinstance(images, list):
         images = [images]
 
@@ -118,8 +118,8 @@ def ocr_chat():
         return jsonify({"code": 503, "msg": "Ollama service not running"}), 503
     except requests.exceptions.Timeout:
         return jsonify({"code": 504, "msg": "Ollama request timeout"}), 504
-    except Exception as e:
-        return jsonify({"code": 500, "msg": str(e)}), 500
+    except Exception:
+        raise
 
 
 def _sync_chat(

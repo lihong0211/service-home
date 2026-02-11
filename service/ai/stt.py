@@ -74,12 +74,7 @@ def transcribe():
             data = request.get_json()
             b64 = data.get("audio_base64") or data.get("audio")
             if not b64:
-                return (
-                    jsonify(
-                        {"code": 400, "msg": "Missing audio_base64 or audio in body"}
-                    ),
-                    400,
-                )
+                raise ValueError("Missing audio_base64 or audio in body")
             raw = base64.b64decode(b64)
             suffix = ".wav"
             if isinstance(b64, str) and b64.startswith("data:"):
@@ -92,15 +87,7 @@ def transcribe():
             with open(audio_path, "wb") as out:
                 out.write(raw)
         else:
-            return (
-                jsonify(
-                    {
-                        "code": 400,
-                        "msg": "Send multipart file or JSON with audio_base64",
-                    }
-                ),
-                400,
-            )
+            raise ValueError("Send multipart file or JSON with audio_base64")
 
         model = _get_model()
         segments_iter, info = model.transcribe(
@@ -125,8 +112,6 @@ def transcribe():
                 "segments": segments_list,
             }
         )
-    except Exception as e:
-        return jsonify({"code": 500, "msg": str(e)}), 500
     finally:
         if audio_path and os.path.exists(audio_path):
             try:
@@ -180,7 +165,7 @@ def transcribe_stream():
 
     audio_path, err = _get_audio_path_from_request()
     if err:
-        return jsonify({"code": 400, "msg": err}), 400
+        raise ValueError(err)
 
     def generate():
         try:

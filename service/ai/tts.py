@@ -33,7 +33,7 @@ def speech():
     voice = data.get("voice") or request.form.get("voice") or DEFAULT_VOICE
 
     if not text or not str(text).strip():
-        return jsonify({"code": 400, "msg": "Missing text"}), 400
+        raise ValueError("Missing text")
 
     text = str(text).strip()
     tmp = None

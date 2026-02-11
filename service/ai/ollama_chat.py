@@ -51,7 +51,7 @@ def chat():
     """
     data = request.get_json(silent=True) or {}
     if not data and request.get_data():
-        return jsonify({"code": 400, "msg": "Invalid JSON or body too large"}), 400
+        raise ValueError("Invalid JSON or body too large")
 
     messages = data.get("messages")
     # 兼容顶层 image（单图）或 images（多图）
@@ -68,7 +68,7 @@ def chat():
     options = data.get("options", {"temperature": 0.45, "num_predict": 2048})
 
     if not messages or not isinstance(messages, list):
-        return jsonify({"code": 400, "msg": "Missing or invalid messages"}), 400
+        raise ValueError("Missing or invalid messages")
 
     # 深拷贝并统一 message 内 image(s) 为 images 数组
     messages = []
@@ -118,15 +118,15 @@ def chat():
         return jsonify({"code": 503, "msg": "Ollama service not running"}), 503
     except requests.exceptions.Timeout:
         return jsonify({"code": 504, "msg": "Ollama request timeout"}), 504
-    except Exception as e:
-        return jsonify({"code": 500, "msg": str(e)}), 500
+    except Exception:
+        raise
 
 
 def ocr_chat():
     """专用 OCR 接口：固定使用 OCR_MODEL，请求格式同 chat（需带图）。"""
     data = request.get_json(silent=True) or {}
     if not data and request.get_data():
-        return jsonify({"code": 400, "msg": "Invalid JSON or body too large"}), 400
+        raise ValueError("Invalid JSON or body too large")
 
     messages = data.get("messages")
     top_level_images = data.get("images")
@@ -144,7 +144,7 @@ def ocr_chat():
         options.setdefault("repeat_penalty", 1.25)
 
     if not messages or not isinstance(messages, list):
-        return jsonify({"code": 400, "msg": "Missing or invalid messages"}), 400
+        raise ValueError("Missing or invalid messages")
 
     messages = []
     for m in data.get("messages", []):
@@ -172,15 +172,7 @@ def ocr_chat():
 
     has_images = bool(top_level_images) or any(m.get("images") for m in messages)
     if not has_images:
-        return (
-            jsonify(
-                {
-                    "code": 400,
-                    "msg": "OCR requires images in messages or top-level images",
-                }
-            ),
-            400,
-        )
+        raise ValueError("OCR requires images in messages or top-level images")
 
     try:
         if stream:
@@ -194,8 +186,8 @@ def ocr_chat():
         return jsonify({"code": 503, "msg": "Ollama service not running"}), 503
     except requests.exceptions.Timeout:
         return jsonify({"code": 504, "msg": "Ollama request timeout"}), 504
-    except Exception as e:
-        return jsonify({"code": 500, "msg": str(e)}), 500
+    except Exception:
+        raise
 
 
 def _sync_chat(

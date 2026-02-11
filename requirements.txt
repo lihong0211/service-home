@@ -8,6 +8,19 @@ python-dotenv==1.0.0
 gunicorn==21.2.0
 
 # AI
+# 向量检索（embedding 模块）
+faiss-cpu>=1.7.0
+numpy>=1.24.0
+PyPDF2>=3.0.0
+pycryptodome>=3.19.0
+python-docx>=1.0.0
+python-pptx>=0.6.0
+# Excel 解析（.xlsx 用 openpyxl，.xls 用 xlrd）
+openpyxl>=3.1.0
+xlrd>=2.0.0
+# 免费 OCR（知识库图片识别，需本机安装 Tesseract：Mac brew install tesseract tesseract-lang）
+pytesseract>=0.3.10
+Pillow>=10.0.0
 faster-whisper>=1.0.0
 flask-sock>=0.7.0
 edge-tts>=6.1.0

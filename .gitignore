@@ -45,4 +45,4 @@ logs/
 *.pid
 # Models
 models/
-
+data/

@@ -142,7 +142,7 @@ def video_understand():
         or (request.form and request.form.get("question"))
     )
     if not question or not str(question).strip():
-        return jsonify({"code": 400, "msg": "Missing question"}), 400
+        raise ValueError("Missing question")
     question = str(question).strip()
 
     num_frames = 6
@@ -162,10 +162,7 @@ def video_understand():
         if request.files:
             f = request.files.get("video") or request.files.get("file")
             if not f or not f.filename:
-                return (
-                    jsonify({"code": 400, "msg": "Missing video or file in form"}),
-                    400,
-                )
+                raise ValueError("Missing video or file in form")
             suffix = os.path.splitext(f.filename)[1] or ".mp4"
             fd, video_path = tempfile.mkstemp(suffix=suffix)
             os.close(fd)
@@ -173,10 +170,7 @@ def video_understand():
         elif request.is_json:
             b64 = data.get("video_base64") or data.get("video")
             if not b64:
-                return (
-                    jsonify({"code": 400, "msg": "Missing video_base64 or video in body"}),
-                    400,
-                )
+                raise ValueError("Missing video_base64 or video in body")
             raw = base64.b64decode(
                 b64.split(",", 1)[-1] if isinstance(b64, str) and "base64," in b64 else b64
             )
@@ -186,15 +180,10 @@ def video_understand():
             with open(video_path, "wb") as out:
                 out.write(raw)
         else:
-            return (
-                jsonify({"code": 400, "msg": "Send multipart video/file or JSON with video_base64"}),
-                400,
-            )
+            raise ValueError("Send multipart video/file or JSON with video_base64")
 
         answer = _analyze_video(video_path, question, num_frames=num_frames)
         return jsonify({"code": 0, "answer": answer})
-    except Exception as e:
-        return jsonify({"code": 500, "msg": str(e)}), 500
     finally:
         if video_path and os.path.exists(video_path):
             try:
