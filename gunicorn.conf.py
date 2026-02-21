@@ -32,8 +32,9 @@ limit_request_line = 4094
 limit_request_fields = 100
 limit_request_field_size = 8190
 
-# 预加载应用（节省内存，但可能导致 worker 间数据不一致）
-preload_app = False
+# 预加载应用：在 master 进程 import 一次，background services 只启动一次，
+# 各 worker fork 后继承 _bg_services_started=True，不会重复启动后台服务
+preload_app = True
 
 # 优雅重启（worker 处理完当前请求后再退出）
 graceful_timeout = 60

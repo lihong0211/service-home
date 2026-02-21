@@ -3,6 +3,9 @@
 主应用文件
 """
 import os
+import subprocess
+import sys
+import threading
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -130,8 +133,52 @@ def handle_exception(e):
     return jsonify({"code": 500, "msg": str(e)}), 500
 
 
-if __name__ == "__main__":
-    import os
+_bg_services_started = False
+_bg_services_lock = threading.Lock()
 
+
+def _start_background_services():
+    """随主进程启动后台服务（仅启动一次）"""
+    global _bg_services_started
+    with _bg_services_lock:
+        if _bg_services_started:
+            return
+        _bg_services_started = True
+
+    root = Path(__file__).resolve().parent
+
+    # A2A agents — 各自独立子进程，携带独立 uvicorn 事件循环
+    a2a_agents = [
+        ("service/ai/a2a/agents/outline_agent.py", "OutlineAgent :8001"),
+        ("service/ai/a2a/agents/doc_agent.py",     "DocAgent    :8002"),
+        ("service/ai/a2a/agents/summary_agent.py", "SummaryAgent:8003"),
+    ]
+    for rel_path, label in a2a_agents:
+        script = root / rel_path
+        if script.exists():
+            subprocess.Popen(
+                [sys.executable, str(script)],
+                cwd=str(root),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            print(f"[BG] {label} started", flush=True)
+        else:
+            print(f"[BG] {label} script not found: {script}", flush=True)
+
+    # DNS updater — 守护线程（内置文件锁，天然防多实例）
+    try:
+        from service.dns_updater import run_loop
+        t = threading.Thread(target=run_loop, daemon=True, name="dns-updater")
+        t.start()
+        print("[BG] dns-updater started", flush=True)
+    except Exception as exc:
+        print(f"[BG] dns-updater failed to start: {exc}", flush=True)
+
+
+_start_background_services()
+
+
+if __name__ == "__main__":
     port = int(os.environ.get("PORT", 3000))
     app.run(host="0.0.0.0", port=port, debug=True, use_reloader=False)
