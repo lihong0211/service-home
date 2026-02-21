@@ -10,12 +10,25 @@ from config.db import DB_CONFIG, DB_PDD_CONFIG, DB_AI_CONFIG
 app = Flask(__name__)
 
 # 配置主数据库
+# 验证配置不为空
+if not DB_CONFIG.get("user"):
+    raise ValueError("DB_USER 未配置，请在 .env 文件中设置 DB_USER")
+if not DB_CONFIG.get("password"):
+    raise ValueError("DB_PASSWORD 未配置，请在 .env 文件中设置 DB_PASSWORD")
+
+# 调试：打印配置信息（不打印完整密码）
+print(f"[DB Config] user={DB_CONFIG['user']}, host={DB_CONFIG['host']}, database={DB_CONFIG['database']}, password_set={bool(DB_CONFIG['password'])}")
+
 encoded_password = quote_plus(DB_CONFIG["password"])
 mysql_url = (
     f"mysql+pymysql://{DB_CONFIG['user']}:{encoded_password}"
     f"@{DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['database']}"
     f"?charset={DB_CONFIG.get('charset', 'utf8mb4')}"
 )
+
+# 调试：打印连接字符串（隐藏密码部分）
+debug_url = mysql_url.split('@')[0].split(':')[0] + ':***@' + '@'.join(mysql_url.split('@')[1:])
+print(f"[DB Config] Connection URL: {debug_url}")
 
 app.config["SQLALCHEMY_DATABASE_URI"] = mysql_url
 

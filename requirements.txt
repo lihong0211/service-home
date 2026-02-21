@@ -34,6 +34,12 @@ qwen-vl-utils
 av
 dashscope>=1.25.0
 qwen-agent>=0.0.33
+# LangChain SQL Agent（Text2SQL，无需手写提示词）
+langchain>=0.3.0
+langchain-community>=0.3.0
+langchain-openai>=0.2.0
+# LangGraph 图工作流（循环、并行、条件路由、人机协作等）
+langgraph>=0.2.0
 python-dateutil==2.8.2
 mcp>=1.26.0
 # 阿里云 DNS SDK（PyPI 包名与 import 名不同）
