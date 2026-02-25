@@ -1,18 +1,11 @@
 # routes/ai.py
 """AI 相关路由：ping、对话、STT、TTS、图像、视频、知识库、向量库、RAG、文件、LangGraph。"""
-
-from flask import jsonify, request
-
 from service.ai.chat import chat, ocr_chat
-from service.ai.langchain import (
-    get_graph_schema,
-    list_graph_names,
-    run_graph_and_collect_steps,
-)
+from service.ai.langchain import langgraph_graph_api, langgraph_run_api
 from service.ai.agent import (
-    list_agents,
-    get_agent_schema,
-    run_agent_and_collect_steps,
+    agent_list_api,
+    agent_schema_api,
+    agent_run_api,
 )
 from service.ai.mcp import (
     mcp_gaode_info_api,
@@ -82,93 +75,11 @@ from service.ai.vector_db import (
     category_delete_api as vector_db_category_delete_api,
     search_api as vector_db_search_api,
 )
-from service.ai.a2a import get_result_for_frontend as a2a_chain_get_result
-
-
-def ai_ping():
-    """跨域测试：GET /ai/ping"""
-    return jsonify({"ok": True})
-
-
-def langgraph_graph_api():
-    """GET /ai/langgraph/graph?name=router 返回图结构，供前端 3D 可视化（GraphData）。"""
-    name = request.args.get("name") or "router"
-    schema = get_graph_schema(name)
-    if schema is None:
-        return (
-            jsonify(
-                {
-                    "code": 400,
-                    "msg": f"未知图: {name}",
-                    "data": {"allowed": list_graph_names()},
-                }
-            ),
-            400,
-        )
-    return jsonify({"code": 0, "msg": "ok", "data": schema})
-
-
-def langgraph_run_api():
-    """POST /ai/langgraph/run 执行图并返回步骤与最终状态，供前端按真实执行顺序驱动 3D 动画。"""
-    body = request.get_json() or {}
-    graph_name = body.get("graph") or "router"
-    input_state = body.get("input")
-    out = run_graph_and_collect_steps(graph_name, input_state)
-    if out.get("error"):
-        return jsonify({"code": 400, "msg": out["error"], "data": out}), 400
-    return jsonify({"code": 0, "msg": "ok", "data": out})
-
-
-def agent_list_api():
-    """GET /ai/agent/list 返回所有可用的智能体列表（含元信息）。"""
-    agents = list_agents()
-    return jsonify({"code": 0, "msg": "ok", "data": agents})
-
-
-def agent_schema_api():
-    """GET /ai/agent/schema?agent_id=research_agent 返回智能体的图结构，供前端 3D 可视化。"""
-    agent_id = request.args.get("agent_id") or "research_agent"
-    schema = get_agent_schema(agent_id)
-    if schema is None:
-        return (
-            jsonify(
-                {
-                    "code": 400,
-                    "msg": f"未知智能体: {agent_id}",
-                    "data": {"allowed": list(list_agents().keys())},
-                }
-            ),
-            400,
-        )
-    return jsonify({"code": 0, "msg": "ok", "data": schema})
-
-
-def agent_run_api():
-    """POST /ai/agent/run 执行智能体并返回步骤与最终状态，供前端按真实执行顺序驱动 3D 动画。"""
-    body = request.get_json() or {}
-    agent_id = body.get("agent_id") or "research_agent"
-    input_data = body.get("input")
-    out = run_agent_and_collect_steps(agent_id, input_data)
-    if out.get("error"):
-        return jsonify({"code": 400, "msg": out["error"], "data": out}), 400
-    return jsonify({"code": 0, "msg": "ok", "data": out})
-
-
-def a2a_chain_api():
-    """POST /ai/a2a/chain 执行 A2A 内容生成链，返回 chain + artifacts + final_artifact，供前端展示。"""
-    body = request.get_json() or {}
-    topic = body.get("topic", "").strip()
-    if not topic:
-        return jsonify({"code": 400, "msg": "缺少参数: topic", "data": None}), 400
-    try:
-        data = a2a_chain_get_result(topic)
-        return jsonify({"code": 0, "msg": "ok", "data": data})
-    except Exception as e:
-        return jsonify({"code": 500, "msg": str(e), "data": None}), 500
+from service.ai.a2a import a2a_chain_api, a2a_chain_stream_api
+from service.ai.finetuning.finetuning import finetuning_chat_api
 
 
 def register_ai(bp):
-    bp.add_url_rule("/ai/ping", "ai_ping", ai_ping, methods=["GET", "OPTIONS"])
     bp.add_url_rule("/ai/chat", "chat", chat, methods=["POST"])
     bp.add_url_rule("/ai/orc", "ocr_chat", ocr_chat, methods=["POST"])
     bp.add_url_rule(
@@ -533,5 +444,19 @@ def register_ai(bp):
         "/ai/a2a/chain",
         "a2a_chain",
         a2a_chain_api,
+        methods=["POST"],
+    )
+    bp.add_url_rule(
+        "/ai/a2a/chain/stream",
+        "a2a_chain_stream",
+        a2a_chain_stream_api,
+        methods=["POST"],
+    )
+
+    # 微调模型聊天（如 Qwen2.5-7B 医疗 LoRA），与 /ai/chat 请求格式兼容
+    bp.add_url_rule(
+        "/ai/finetuning/chat",
+        "finetuning_chat",
+        finetuning_chat_api,
         methods=["POST"],
     )

@@ -583,6 +583,44 @@ def run_graph_and_collect_steps(graph_name: str, input_state: dict | None = None
 
 
 # ---------------------------------------------------------------------------
+# Flask 视图：供 routes/ai 注册 GET/POST
+# ---------------------------------------------------------------------------
+
+
+def langgraph_graph_api():
+    """GET /ai/langgraph/graph?name=router 返回图结构，供前端 3D 可视化（GraphData）。"""
+    from flask import request, jsonify
+
+    name = request.args.get("name") or "router"
+    schema = get_graph_schema(name)
+    if schema is None:
+        return (
+            jsonify(
+                {
+                    "code": 400,
+                    "msg": f"未知图: {name}",
+                    "data": {"allowed": list_graph_names()},
+                }
+            ),
+            400,
+        )
+    return jsonify({"code": 0, "msg": "ok", "data": schema})
+
+
+def langgraph_run_api():
+    """POST /ai/langgraph/run 执行图并返回步骤与最终状态，供前端按真实执行顺序驱动 3D 动画。"""
+    from flask import request, jsonify
+
+    body = request.get_json() or {}
+    graph_name = body.get("graph") or "router"
+    input_state = body.get("input")
+    out = run_graph_and_collect_steps(graph_name, input_state)
+    if out.get("error"):
+        return jsonify({"code": 400, "msg": out["error"], "data": out}), 400
+    return jsonify({"code": 0, "msg": "ok", "data": out})
+
+
+# ---------------------------------------------------------------------------
 # 入口：运行全部演示
 # ---------------------------------------------------------------------------
 

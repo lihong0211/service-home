@@ -9,10 +9,12 @@ OutlineAgent — 标准 A2A 实现
 from __future__ import annotations
 
 import json
+import re
 import uuid
 import sys
 from pathlib import Path
 
+import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 
@@ -63,16 +65,89 @@ def _extract_topic(message: Message) -> str:
     return ""
 
 
-def _generate_outline(topic: str) -> dict:
-    """根据主题生成大纲（可替换为 LLM 调用）"""
-    return {
-        "topic": topic,
-        "sections": [
-            {"title": "引言", "key_points": [f"介绍{topic}的背景与意义"]},
-            {"title": "核心内容", "key_points": ["要点一", "要点二", "要点三"]},
-            {"title": "总结", "key_points": ["回顾与展望"]},
-        ],
+_OLLAMA_URL = "http://localhost:11434"
+_LLM_MODEL = "my-deepseek-r1-1.5"
+_THINKING_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+
+
+def _call_llm(prompt: str) -> str:
+    """调用 Ollama，返回干净的 content 字符串（已去除 thinking 标签）"""
+    body = {
+        "model": _LLM_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": False,
+        "options": {"temperature": 0.7, "num_predict": 2048},
     }
+    resp = requests.post(f"{_OLLAMA_URL}/api/chat", json=body, timeout=180)
+    resp.raise_for_status()
+    content = resp.json().get("message", {}).get("content", "")
+    return _THINKING_RE.sub("", content).strip()
+
+
+def _parse_outline_text(topic: str, text: str) -> dict:
+    """将模型输出的纯文本大纲解析成结构化 dict"""
+    sections = []
+    current_title = None
+    current_points: list[str] = []
+
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        # 章节标题：以数字+点、##、【】 开头，或全大写独行
+        if (re.match(r"^(\d+[\.\、]|#{1,3}|【)", line) or
+                (len(line) < 20 and not line.startswith("-") and not line.startswith("•"))):
+            if current_title and current_points:
+                sections.append({"title": current_title, "key_points": current_points})
+            # 清理标题前缀符号
+            current_title = re.sub(r"^[\d\.\、#\s【】]+", "", line).strip() or line
+            current_points = []
+        elif line.startswith(("-", "•", "*", "·")):
+            point = re.sub(r"^[-•*·\s]+", "", line).strip()
+            if point:
+                current_points.append(point)
+        else:
+            # 纯文本行当作要点
+            if current_title is not None:
+                current_points.append(line)
+
+    if current_title and current_points:
+        sections.append({"title": current_title, "key_points": current_points})
+
+    if not sections:
+        raise ValueError("no sections parsed")
+    return {"topic": topic, "sections": sections}
+
+
+def _generate_outline(topic: str) -> dict:
+    """调用 LLM 根据主题生成结构化大纲"""
+    prompt = (
+        f"请为主题「{topic}」生成一篇文章的大纲。\n\n"
+        "格式要求：\n"
+        "- 列出 4~6 个章节标题\n"
+        "- 每个章节下用短横线列出 3~5 个具体要点\n"
+        "- 直接输出大纲，不要额外说明\n\n"
+        "示例格式：\n"
+        "1. 引言\n"
+        "- 背景与意义\n"
+        "- 研究现状\n"
+        "2. 核心概念\n"
+        "- 概念定义\n"
+        "- 核心特征\n"
+    )
+    try:
+        text = _call_llm(prompt)
+        data = _parse_outline_text(topic, text)
+        return data
+    except Exception:
+        return {
+            "topic": topic,
+            "sections": [
+                {"title": "引言", "key_points": [f"介绍{topic}的背景与意义"]},
+                {"title": "核心内容", "key_points": ["要点一", "要点二", "要点三"]},
+                {"title": "总结", "key_points": ["回顾与展望"]},
+            ],
+        }
 
 
 def _process(message: Message) -> Task:

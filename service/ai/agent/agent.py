@@ -231,3 +231,49 @@ def run_agent_and_collect_steps(agent_id: str, input_data: Optional[dict] = None
         }
     except Exception as e:
         return {"error": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# Flask 视图：供 routes/ai 注册 GET/POST
+# ---------------------------------------------------------------------------
+
+
+def agent_list_api():
+    """GET /ai/agent/list 返回所有可用的智能体列表（含元信息）。"""
+    from flask import jsonify
+
+    agents = list_agents()
+    return jsonify({"code": 0, "msg": "ok", "data": agents})
+
+
+def agent_schema_api():
+    """GET /ai/agent/schema?agent_id=research_agent 返回智能体的图结构，供前端 3D 可视化。"""
+    from flask import request, jsonify
+
+    agent_id = request.args.get("agent_id") or "research_agent"
+    schema = get_agent_schema(agent_id)
+    if schema is None:
+        return (
+            jsonify(
+                {
+                    "code": 400,
+                    "msg": f"未知智能体: {agent_id}",
+                    "data": {"allowed": list(list_agents().keys())},
+                }
+            ),
+            400,
+        )
+    return jsonify({"code": 0, "msg": "ok", "data": schema})
+
+
+def agent_run_api():
+    """POST /ai/agent/run 执行智能体并返回步骤与最终状态，供前端按真实执行顺序驱动 3D 动画。"""
+    from flask import request, jsonify
+
+    body = request.get_json() or {}
+    agent_id = body.get("agent_id") or "research_agent"
+    input_data = body.get("input")
+    out = run_agent_and_collect_steps(agent_id, input_data)
+    if out.get("error"):
+        return jsonify({"code": 400, "msg": out["error"], "data": out}), 400
+    return jsonify({"code": 0, "msg": "ok", "data": out})

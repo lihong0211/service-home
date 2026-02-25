@@ -48,5 +48,10 @@ logs/
 # Models
 models/
 data/
+<<<<<<< HEAD
 # 四川方言等下载的数据集（体积大）
 dataset/
+=======
+lora/
+dataset/
+>>>>>>> ed7fe72fcb542e6e945584c66e2f13f7e331c9cf

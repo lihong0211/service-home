@@ -11,10 +11,12 @@ DocAgent — 标准 A2A 实现
 from __future__ import annotations
 
 import json
+import re
 import uuid
 import sys
 from pathlib import Path
 
+import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 
@@ -60,17 +62,54 @@ def _extract_outline(message: Message) -> dict | None:
     return None
 
 
+_OLLAMA_URL = "http://localhost:11434"
+_LLM_MODEL = "my-deepseek-r1-1.5"
+_THINKING_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+
+
+def _call_llm(prompt: str) -> str:
+    body = {
+        "model": _LLM_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": False,
+        "options": {"temperature": 0.7, "num_predict": 4096},
+    }
+    resp = requests.post(f"{_OLLAMA_URL}/api/chat", json=body, timeout=300)
+    resp.raise_for_status()
+    content = resp.json().get("message", {}).get("content", "")
+    return _THINKING_RE.sub("", content).strip()
+
+
 def _generate_document(outline: dict) -> dict:
-    """根据大纲生成正文（可替换为 LLM 调用）"""
+    """调用 LLM 根据大纲逐章节生成正文"""
     topic = outline.get("topic", "未命名")
+    sections = outline.get("sections", [])
     paragraphs = []
-    for sec in outline.get("sections", []):
-        title = sec.get("title", "")
-        points = sec.get("key_points", [])
-        paragraphs.append({
-            "heading": title,
-            "text": f"## {title}\n\n" + "\n\n".join(f"- {p}" for p in points),
-        })
+
+    for sec in sections:
+        heading = sec.get("title", "")
+        key_points = sec.get("key_points", [])
+        points_str = "\n".join(f"- {p}" for p in key_points)
+        prompt = (
+            f"请为文章「{topic}」的章节「{heading}」撰写一段正文。\n\n"
+            f"该章节需要涵盖以下要点：\n{points_str}\n\n"
+            "要求：\n"
+            "- 用流畅的中文段落写作，内容具体、充实\n"
+            "- 不少于 150 字\n"
+            "- 直接输出正文段落，不要标题，不要编号"
+        )
+        try:
+            text = _call_llm(prompt)
+            if text:
+                paragraphs.append({"heading": heading, "text": text})
+            else:
+                raise ValueError("empty response")
+        except Exception:
+            paragraphs.append({
+                "heading": heading,
+                "text": "\n".join(f"- {p}" for p in key_points),
+            })
+
     return {"title": topic, "paragraphs": paragraphs}
 
 

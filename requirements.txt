@@ -9,8 +9,9 @@ gunicorn==21.2.0
 
 # AI
 # 向量检索（embedding 模块）
-# faiss-cpu>=1.7.0
 numpy>=1.24.0,<2
+faiss-cpu>=1.7.0
+numpy>=2.2.6
 PyPDF2>=3.0.0
 pycryptodome>=3.19.0
 python-docx>=1.0.0
@@ -47,3 +48,19 @@ modelscope>=1.30.0
 # 阿里云 DNS SDK（PyPI 包名与 import 名不同）
 aliyun-python-sdk-core>=1.2.11
 aliyun-python-sdk-alidns>=3.0.0
+
+# === 医疗微调 (Qwen2.5-7B) 必要依赖 ===
+bitsandbytes>=0.45.4    # 4bit 量化加载 (load_in_4bit=True)
+datasets>=3.1.0
+pandas>=2.0.3
+peft>=0.15.0            # LoRA / hotswap，unsloth 也依赖
+torch>=2.5.1
+transformers>=4.51.3
+trl>=0.15.2             # SFTTrainer
+unsloth>=2025.3.19
+
+# === 可选：非本脚本必需 ===
+torchvision>=0.20.1   # 仅视觉模型 (如 Qwen-VL) 需要，纯文本 7B 可删
+# unsloth_zoo>=2025.3.17  # unsloth 预设/示例，可删
+# vllm>=0.7.0            # 推理加速/服务，做训练可删
+# wandb>=0.19.11         # 脚本里 report_to="none" 未用，可删
