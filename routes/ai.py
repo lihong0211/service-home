@@ -76,7 +76,7 @@ from service.ai.vector_db import (
     search_api as vector_db_search_api,
 )
 from service.ai.a2a import a2a_chain_api, a2a_chain_stream_api
-from service.ai.finetuning import finetuning_chat_api
+from service.ai.finetuning.finetuning import finetuning_chat_api
 
 
 def register_ai(bp):

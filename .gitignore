@@ -46,3 +46,5 @@ logs/
 # Models
 models/
 data/
+lora/
+dataset/

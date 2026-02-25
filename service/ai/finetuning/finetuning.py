@@ -12,20 +12,25 @@ from pathlib import Path
 
 # 懒加载：首次调用时再 import 大依赖
 _model_tokenizer_lock = threading.Lock()
-_model_tokenizer = None  # (lora_model, tokenizer)
+_model_tokenizer = {}  # lora_type -> (lora_model, tokenizer)
 _base_model_tokenizer = None  # (base_model, tokenizer)，用于对比输出
-
 
 # 默认使用 1.5B + 医疗 LoRA 作为前端问答基础（轻量、响应快）
 _DEFAULT_MODEL_NAME = "Qwen2.5-1.5B-Instruct"
 
+# 前端选择的 LoRA 类型：medical=医疗问诊，legal=法律咨询；对应 lora/ 下目录名（None 表示用 get_latest_lora_dir）
+LORA_TYPE_DIRS = {
+    "medical": None,  # 使用最新 20260224_Qwen2.5-1.5B-Instruct 等
+    "legal": "20260225_Qwen2.5-1.5B-Instruct-legal",
+}
 
-def _get_paths():
+
+def _get_paths(lora_type="medical"):
     """解析 base 模型与 LoRA 适配器路径。
 
-    - Base 模型：项目根 / models / Qwen / {FINETUNING_MODEL_NAME}，默认 1.5B（可用 FINETUNING_BASE_MODEL 覆盖完整路径）
-    - LoRA 适配器：环境变量 FINETUNING_LORA_PATH，或根目录 lora/ 下最新一次 {日期}_{模型名}（由 FINETUNING_MODEL_NAME 决定），
-      若不存在则回退到同目录 lora_model_medical_hf（兼容旧结构）。
+    - lora_type: "medical" | "legal"，决定使用哪一版 LoRA。
+    - Base 模型：项目根 / models / Qwen / {FINETUNING_MODEL_NAME}
+    - LoRA：LORA_TYPE_DIRS[lora_type] 指定目录名时用 lora/{目录名}，否则用 get_latest_lora_dir（医疗）。
     """
     from service.ai.finetuning.paths import get_finetuning_root, get_latest_lora_dir, get_project_root
 
@@ -37,9 +42,13 @@ def _get_paths():
     if lora_env:
         lora = lora_env
     else:
-        latest = get_latest_lora_dir(get_finetuning_root(), model_name=model_name)
-        legacy = file_path.parent / "lora_model_medical_hf"
-        lora = str(latest) if (latest and latest.is_dir()) else str(legacy)
+        dir_name = LORA_TYPE_DIRS.get(lora_type) if lora_type else None
+        if dir_name:
+            lora = str(project_root / "lora" / dir_name)
+        else:
+            latest = get_latest_lora_dir(get_finetuning_root(), model_name=model_name)
+            legacy = file_path.parent / "lora_model_medical_hf"
+            lora = str(latest) if (latest and latest.is_dir()) else str(legacy)
     return base, lora
 
 
@@ -78,18 +87,19 @@ def _load_tokenizer(base_path):
     return tokenizer
 
 
-def get_model():
-    """懒加载：加载 base 模型 + LoRA 适配器，返回 (model, tokenizer)。"""
+def get_model(lora_type="medical"):
+    """懒加载：按 lora_type 加载 base + 对应 LoRA，返回 (model, tokenizer)。"""
     global _model_tokenizer
+    lora_type = lora_type or "medical"
     with _model_tokenizer_lock:
-        if _model_tokenizer is not None:
-            return _model_tokenizer
+        if lora_type in _model_tokenizer:
+            return _model_tokenizer[lora_type]
 
         import torch
-        from transformers import AutoModelForCausalLM, AutoTokenizer
+        from transformers import AutoModelForCausalLM
         from peft import PeftModel
 
-        base_path, lora_path = _get_paths()
+        base_path, lora_path = _get_paths(lora_type)
         if not os.path.isdir(lora_path):
             raise FileNotFoundError(f"LoRA 适配器目录不存在: {lora_path}")
         if not os.path.isdir(base_path):
@@ -105,7 +115,6 @@ def get_model():
             device = "cpu"
             dtype = torch.float16
 
-        # tokenizer 从 base 加载；遇 dict.model_type 错误时用 tokenizer_file + chat_template 兜底
         tokenizer = _load_tokenizer(base_path)
         model = AutoModelForCausalLM.from_pretrained(
             base_path,
@@ -117,8 +126,8 @@ def get_model():
         model = model.to(device)
         model.eval()
 
-        _model_tokenizer = (model, tokenizer)
-        return _model_tokenizer
+        _model_tokenizer[lora_type] = (model, tokenizer)
+        return _model_tokenizer[lora_type]
 
 
 def get_base_model():
@@ -219,16 +228,17 @@ def _gen_kwargs(request_options, tokenizer):
     }
 
 
-def chat(messages, stream=False, options=None):
+def chat(messages, stream=False, options=None, lora_type="medical"):
     """
     使用微调模型生成回复。
 
     :param messages: [{"role":"user"|"assistant"|"system","content":"..."}, ...]
     :param stream: 是否流式返回
     :param options: 可选 {"temperature", "num_predict", "top_p", "repeat_penalty"}
+    :param lora_type: "medical" | "legal"，选择医疗或法律 LoRA
     :return: stream=False 时返回完整 content 字符串；stream=True 时返回生成器，yield 文本块。
     """
-    model, tokenizer = get_model()
+    model, tokenizer = get_model(lora_type=lora_type)
     prompt = _messages_to_input(messages, tokenizer)
     gen_kw = _gen_kwargs(options, tokenizer)
 
@@ -262,12 +272,13 @@ def chat_sync(messages, options=None):
     return next(gen, "")
 
 
-def chat_sync_compare(messages, options=None):
+def chat_sync_compare(messages, options=None, lora_type="medical"):
     """
-    非流式：同时用 base（1.5B 原版）与 base+LoRA（lora/20260224_Qwen2.5-1.5B-Instruct）各生成一次，返回两段回复便于对比。
+    非流式：同时用 base（1.5B 原版）与 base+LoRA（医疗/法律等）各生成一次，返回两段回复便于对比。
+    :param lora_type: "medical" | "legal"
     :return: {"base": "基座回复", "lora": "LoRA 回复"}
     """
-    lora_model, tokenizer = get_model()
+    lora_model, tokenizer = get_model(lora_type=lora_type)
     base_model, _ = get_base_model()
     prompt = _messages_to_input(messages, tokenizer)
     gen_kw = _gen_kwargs(options, tokenizer)
@@ -276,21 +287,22 @@ def chat_sync_compare(messages, options=None):
     return {"base": base_text, "lora": lora_text}
 
 
-def chat_stream(messages, options=None):
+def chat_stream(messages, options=None, lora_type="medical"):
     """流式：返回生成器，逐个 yield 文本块（仅 LoRA）。"""
-    return chat(messages, stream=True, options=options)
+    return chat(messages, stream=True, options=options, lora_type=lora_type)
 
 
-def chat_stream_compare(messages, options=None):
+def chat_stream_compare(messages, options=None, lora_type="medical"):
     """
     流式：base 与 LoRA 两路并行生成，按到达顺序 yield (source, chunk)，source 为 "base" 或 "lora"。
     前端可同时往两栏追加内容。
+    :param lora_type: "medical" | "legal"
     """
     import torch
     from transformers import TextIteratorStreamer
 
     base_model, tokenizer = get_base_model()
-    lora_model, _ = get_model()
+    lora_model, _ = get_model(lora_type=lora_type)
     prompt = _messages_to_input(messages, tokenizer)
     gen_kw = _gen_kwargs(options, tokenizer)
     gen_kw["max_new_tokens"] = gen_kw.get("max_new_tokens", 512)
@@ -366,6 +378,10 @@ def finetuning_chat_api():
     stream = data.get("stream", False)
     compare = data.get("compare", False)
     options = data.get("options", {})
+    # 前端选择对比的 LoRA：medical=医疗问诊，legal=法律咨询
+    lora_type = (data.get("lora") or data.get("model_type") or "medical").strip().lower()
+    if lora_type not in LORA_TYPE_DIRS:
+        lora_type = "medical"
 
     try:
         if stream:
@@ -373,7 +389,7 @@ def finetuning_chat_api():
                 # 同时流式输出 base 与 lora 两路，事件格式 {"source": "base"|"lora", "content": "..."} 或 {"source": "...", "done": true}
                 def generate_compare():
                     try:
-                        for source, chunk in chat_stream_compare(messages, options=options):
+                        for source, chunk in chat_stream_compare(messages, options=options, lora_type=lora_type):
                             if chunk is None:
                                 out = {"source": source, "done": True}
                             else:
@@ -387,7 +403,7 @@ def finetuning_chat_api():
             else:
                 def generate():
                     try:
-                        for chunk in chat_stream(messages, options=options):
+                        for chunk in chat_stream(messages, options=options, lora_type=lora_type):
                             out = {"message": {"content": chunk}, "response": chunk}
                             yield f"data: {json.dumps(out, ensure_ascii=False)}\n\n"
                         yield "data: [DONE]\n\n"
@@ -407,9 +423,10 @@ def finetuning_chat_api():
                 },
             )
         # 非流式：同时返回基座与 LoRA 两种回复，便于对比
-        result = chat_sync_compare(messages, options=options)
+        result = chat_sync_compare(messages, options=options, lora_type=lora_type)
         return jsonify({
             "code": 0,
+            "lora_type": lora_type,
             "message": {
                 "role": "assistant",
                 "content": result.get("lora") or "",
