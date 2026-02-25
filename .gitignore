@@ -1,3 +1,4 @@
+.DS_Store
 # Python
 __pycache__/
 *.py[cod]
@@ -22,6 +23,7 @@ wheels/
 
 # Virtual Environment
 venv/
+.venv/
 ENV/
 env/
 
@@ -46,3 +48,5 @@ logs/
 # Models
 models/
 data/
+# 四川方言等下载的数据集（体积大）
+dataset/
