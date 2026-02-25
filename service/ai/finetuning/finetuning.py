@@ -424,9 +424,11 @@ def finetuning_chat_api():
             )
         # 非流式：同时返回基座与 LoRA 两种回复，便于对比
         result = chat_sync_compare(messages, options=options, lora_type=lora_type)
+        _, lora_path_used = _get_paths(lora_type)
         return jsonify({
             "code": 0,
             "lora_type": lora_type,
+            "lora_path_used": lora_path_used,
             "message": {
                 "role": "assistant",
                 "content": result.get("lora") or "",
