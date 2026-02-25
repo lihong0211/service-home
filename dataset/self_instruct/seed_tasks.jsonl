@@ -1,0 +1,10 @@
+{"id": "seed_1", "instruction": "将给定的中文句子翻译成英文。"}
+{"id": "seed_2", "instruction": "用一句话概括下面这段文字的主旨。"}
+{"id": "seed_3", "instruction": "根据关键词写一首五言绝句。"}
+{"id": "seed_4", "instruction": "列出上述步骤中的潜在风险并给出应对建议。"}
+{"id": "seed_5", "instruction": "把下面的要点改写成正式的公函用语。"}
+{"id": "seed_6", "instruction": "判断以下说法是否正确，并简要说明理由。"}
+{"id": "seed_7", "instruction": "将表格中的数据用文字描述出来。"}
+{"id": "seed_8", "instruction": "为给定的产品写一段 50 字以内的广告语。"}
+{"id": "seed_9", "instruction": "把对话改写成第三人称叙述。"}
+{"id": "seed_10", "instruction": "根据用户问题从给定文档中找出相关句子并引用。"}

@@ -10,8 +10,10 @@ A2A 内容生成链编排器（Client Agent）
 """
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime
+from typing import Generator
 
 import requests
 
@@ -48,7 +50,7 @@ def _send_message(agent_name: str, message: Message) -> Task:
     r = requests.post(
         f"{base}/tasks/send",
         json=req.model_dump(),
-        timeout=30,
+        timeout=600,
     )
     r.raise_for_status()
     return Task(**r.json())
@@ -221,6 +223,150 @@ def _failed_task(ctx_id: str, error: str) -> Task:
     )
 
 
+# ---------- SSE 流式链路 ----------
+
+def stream_chain(topic: str) -> Generator[str, None, None]:
+    """
+    SSE 生成器：每完成一个 Agent 步骤就推送一条事件，最终推送 chain_done。
+
+    事件格式（每条均为标准 SSE `data: <json>\\n\\n`）：
+      step_start  — 某步骤开始执行
+      step_done   — 某步骤完成，携带该步骤的 artifact data
+      chain_done  — 全链完成，携带 chain 摘要 + final artifact data
+      chain_error — 某步骤失败，携带错误信息
+    """
+    def emit(payload: dict) -> str:
+        return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+    chain: list[ChainStep] = []
+    tasks: list[Task] = []
+    ctx_id = str(uuid.uuid4())
+
+    # ── Step 1: OutlineAgent ───────────────────────────────────────────
+    yield emit({"event": "step_start", "step": 1, "agent": "OutlineAgent"})
+
+    step = ChainStep(
+        step_index=1, agent_name="OutlineAgent", agent_version="1.0",
+        status="submitted", input_summary=f"topic: {topic}",
+        started_at=datetime.utcnow().isoformat() + "Z",
+    )
+    chain.append(step)
+
+    try:
+        _discover("OutlineAgent")
+        msg = Message(role="user", parts=[TextPart(text=topic)], contextId=ctx_id)
+        task = _send_message("OutlineAgent", msg)
+        outline_data = _extract_data_from_task(task)
+        step.status = task.status.state
+        step.ended_at = datetime.utcnow().isoformat() + "Z"
+        step.output_summary = _short_summary(outline_data) or "大纲"
+        tasks.append(task)
+    except Exception as e:
+        step.status = "failed"
+        step.ended_at = datetime.utcnow().isoformat() + "Z"
+        step.error_message = str(e)
+        yield emit({"event": "chain_error", "step": 1, "agent": "OutlineAgent", "error": str(e)})
+        yield "data: [DONE]\n\n"
+        return
+
+    if task.status.state != "completed" or not outline_data:
+        step.status = "failed"
+        yield emit({"event": "chain_error", "step": 1, "agent": "OutlineAgent", "error": "no artifact"})
+        yield "data: [DONE]\n\n"
+        return
+
+    yield emit({"event": "step_done", "step": 1, "agent": "OutlineAgent",
+                "status": step.status, "data": outline_data})
+
+    # ── Step 2: DocAgent ───────────────────────────────────────────────
+    yield emit({"event": "step_start", "step": 2, "agent": "DocAgent"})
+
+    step = ChainStep(
+        step_index=2, agent_name="DocAgent", agent_version="1.0",
+        status="submitted", input_summary=_short_summary(outline_data),
+        started_at=datetime.utcnow().isoformat() + "Z",
+    )
+    chain.append(step)
+
+    try:
+        _discover("DocAgent")
+        msg = Message(
+            role="user",
+            parts=[TextPart(text="请根据以下大纲生成文章正文"), DataPart(data=outline_data)],
+            contextId=ctx_id,
+        )
+        task = _send_message("DocAgent", msg)
+        doc_data = _extract_data_from_task(task)
+        step.status = task.status.state
+        step.ended_at = datetime.utcnow().isoformat() + "Z"
+        step.output_summary = _short_summary(doc_data) or "正文"
+        tasks.append(task)
+    except Exception as e:
+        step.status = "failed"
+        step.ended_at = datetime.utcnow().isoformat() + "Z"
+        step.error_message = str(e)
+        yield emit({"event": "chain_error", "step": 2, "agent": "DocAgent", "error": str(e)})
+        yield "data: [DONE]\n\n"
+        return
+
+    if task.status.state != "completed" or not doc_data:
+        step.status = "failed"
+        yield emit({"event": "chain_error", "step": 2, "agent": "DocAgent", "error": "no artifact"})
+        yield "data: [DONE]\n\n"
+        return
+
+    yield emit({"event": "step_done", "step": 2, "agent": "DocAgent",
+                "status": step.status, "data": doc_data})
+
+    # ── Step 3: SummaryAgent ───────────────────────────────────────────
+    yield emit({"event": "step_start", "step": 3, "agent": "SummaryAgent"})
+
+    step = ChainStep(
+        step_index=3, agent_name="SummaryAgent", agent_version="1.0",
+        status="submitted", input_summary=_short_summary(doc_data),
+        started_at=datetime.utcnow().isoformat() + "Z",
+    )
+    chain.append(step)
+
+    try:
+        _discover("SummaryAgent")
+        msg = Message(
+            role="user",
+            parts=[TextPart(text="请根据以下正文生成摘要"), DataPart(data=doc_data)],
+            contextId=ctx_id,
+        )
+        task = _send_message("SummaryAgent", msg)
+        summary_data = _extract_data_from_task(task)
+        step.status = task.status.state
+        step.ended_at = datetime.utcnow().isoformat() + "Z"
+        step.output_summary = _short_summary(summary_data) or "摘要"
+        tasks.append(task)
+    except Exception as e:
+        step.status = "failed"
+        step.ended_at = datetime.utcnow().isoformat() + "Z"
+        step.error_message = str(e)
+        yield emit({"event": "chain_error", "step": 3, "agent": "SummaryAgent", "error": str(e)})
+        yield "data: [DONE]\n\n"
+        return
+
+    yield emit({"event": "step_done", "step": 3, "agent": "SummaryAgent",
+                "status": step.status, "data": summary_data})
+
+    # ── 全链完成 ───────────────────────────────────────────────────────
+    chain_summary = [
+        {
+            "step_index": s.step_index,
+            "agent_name": s.agent_name,
+            "status": s.status,
+            "started_at": s.started_at,
+            "ended_at": s.ended_at,
+        }
+        for s in chain
+    ]
+    yield emit({"event": "chain_done", "chain": chain_summary, "data": summary_data})
+    yield "data: [DONE]\n\n"
+
+
 # ---------- 供 Flask 路由使用 ----------
 
 def get_result_for_frontend(topic: str) -> dict:
@@ -232,6 +378,46 @@ def get_result_for_frontend(topic: str) -> dict:
     """
     result = run_chain(topic)
     return result.model_dump()
+
+
+# ---------------------------------------------------------------------------
+# Flask 视图：供 routes/ai 注册 POST
+# ---------------------------------------------------------------------------
+
+
+def a2a_chain_api():
+    """POST /ai/a2a/chain 执行 A2A 内容生成链，返回 chain + artifacts + final_artifact，供前端展示。"""
+    from flask import request, jsonify
+
+    body = request.get_json() or {}
+    topic = body.get("topic", "").strip()
+    if not topic:
+        return jsonify({"code": 400, "msg": "缺少参数: topic", "data": None}), 400
+    try:
+        data = get_result_for_frontend(topic)
+        return jsonify({"code": 0, "msg": "ok", "data": data})
+    except Exception as e:
+        return jsonify({"code": 500, "msg": str(e), "data": None}), 500
+
+
+def a2a_chain_stream_api():
+    """POST /ai/a2a/chain/stream  SSE 流式接口：每完成一个 Agent 步骤推送一条事件。"""
+    from flask import request, Response, jsonify, stream_with_context
+
+    body = request.get_json() or {}
+    topic = body.get("topic", "").strip()
+    if not topic:
+        return jsonify({"code": 400, "msg": "缺少参数: topic", "data": None}), 400
+    return Response(
+        stream_with_context(stream_chain(topic)),
+        mimetype="text/event-stream; charset=utf-8",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+            "Access-Control-Allow-Origin": "*",
+        },
+    )
 
 
 if __name__ == "__main__":

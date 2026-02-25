@@ -11,10 +11,12 @@ SummaryAgent — 标准 A2A 实现
 from __future__ import annotations
 
 import json
+import re
 import uuid
 import sys
 from pathlib import Path
 
+import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 
@@ -60,15 +62,68 @@ def _extract_document(message: Message) -> dict | None:
     return None
 
 
+_OLLAMA_URL = "http://localhost:11434"
+_LLM_MODEL = "my-deepseek-r1-1.5"
+_THINKING_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+
+
+def _call_llm(prompt: str) -> str:
+    body = {
+        "model": _LLM_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": False,
+        "options": {"temperature": 0.5, "num_predict": 1024},
+    }
+    resp = requests.post(f"{_OLLAMA_URL}/api/chat", json=body, timeout=180)
+    resp.raise_for_status()
+    content = resp.json().get("message", {}).get("content", "")
+    return _THINKING_RE.sub("", content).strip()
+
+
 def _generate_summary(doc: dict) -> dict:
-    """根据正文生成摘要（可替换为 LLM 调用）"""
+    """调用 LLM 根据正文生成摘要与核心要点"""
     title = doc.get("title", "未命名")
-    paragraphs = doc.get("paragraphs", [])
-    headings = [p.get("heading", "") for p in paragraphs if p.get("heading")]
+    # 截取正文（避免超过 token 限制）
+    full_text = "\n\n".join(
+        f"[{p['heading']}]\n{p['text']}"
+        for p in doc.get("paragraphs", [])
+        if p.get("heading") or p.get("text")
+    )[:3000]
+
+    # 生成摘要段落
+    summary_prompt = (
+        f"请为以下文章「{title}」写一段 100~200 字的摘要，概括文章主旨与核心内容。\n\n"
+        f"{full_text}\n\n"
+        "直接输出摘要段落，不要标题，不要额外说明。"
+    )
+    # 生成核心要点
+    points_prompt = (
+        f"请从以下文章「{title}」中提炼 4~6 条核心要点，每条一行，以短横线开头。\n\n"
+        f"{full_text}\n\n"
+        "直接输出要点列表，不要额外说明。"
+    )
+
+    try:
+        summary_text = _call_llm(summary_prompt)
+    except Exception:
+        summary_text = f"本文围绕《{title}》展开，深入探讨了相关核心内容。"
+
+    try:
+        points_raw = _call_llm(points_prompt)
+        key_points = [
+            re.sub(r"^[-•*·\d\.\s]+", "", line).strip()
+            for line in points_raw.splitlines()
+            if line.strip() and re.match(r"^[-•*·\d]", line.strip())
+        ][:6]
+        if not key_points:
+            key_points = [p.get("heading", "") for p in doc.get("paragraphs", []) if p.get("heading")][:5]
+    except Exception:
+        key_points = [p.get("heading", "") for p in doc.get("paragraphs", []) if p.get("heading")][:5]
+
     return {
         "title": title,
-        "summary": f"本文围绕《{title}》展开，主要包含：{', '.join(headings)}。",
-        "key_points": headings[:5],
+        "summary": summary_text,
+        "key_points": key_points,
     }
 
 
