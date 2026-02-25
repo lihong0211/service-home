@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-法律咨询数据集：从 CrimeKgAssistant/data/qa_corpus.json 加载问答对，供法律 LoRA 微调用。
+法律咨询数据集：从 dataset/【数据集】legal/qa_corpus.json 加载问答对，供法律 LoRA 微调用。
 格式：JSONL，每行一个 JSON：{"question": "...", "answers": ["...", ...], "category": "..."}
 """
 import os
@@ -10,9 +10,9 @@ from datasets import Dataset
 
 
 def get_legal_qa_path():
-    """CrimeKgAssistant 数据路径（项目根下 dataset/CrimeKgAssitant/data/qa_corpus.json）。"""
+    """法律 QA 数据路径（项目根下 dataset/【数据集】legal/qa_corpus.json）。"""
     root = Path(__file__).resolve().parents[3]
-    return root / "dataset" / "CrimeKgAssitant" / "data" / "qa_corpus.json"
+    return root / "dataset" / "【数据集】legal" / "qa_corpus.json"
 
 
 def load_legal_data(
@@ -24,7 +24,7 @@ def load_legal_data(
     """
     加载法律咨询 QA，返回 HuggingFace Dataset，每条为 {"instruction", "input", "output"}。
 
-    :param json_path: qa_corpus.json 路径，默认项目下 dataset/CrimeKgAssitant/data/qa_corpus.json
+    :param json_path: qa_corpus.json 路径，默认项目下 dataset/【数据集】legal/qa_corpus.json
     :param max_question_len: 问题最大长度，过长跳过
     :param max_answer_len: 回答最大长度；若 use_first_answer_only=False 则多条回答拼接后截断
     :param use_first_answer_only: True 只取 answers[0]，False 则用 " ".join(answers)

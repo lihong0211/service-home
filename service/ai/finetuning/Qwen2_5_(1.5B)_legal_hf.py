@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 # coding: utf-8
 """
-Qwen2.5-1.5B 法律咨询微调 - 使用 CrimeKgAssistant/data/qa_corpus.json 训练 LoRA。
-数据来源：dataset/CrimeKgAssitant/data/qa_corpus.json（JSONL，question + answers + category）
+Qwen2.5-1.5B 法律咨询微调 - 使用法律 QA 数据集训练 LoRA。
+数据来源：dataset/【数据集】legal/qa_corpus.json（JSONL，question + answers + category）
 """
 
 import os

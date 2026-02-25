@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
 下载 ModelScope 四川方言语音数据集（799 小时手机采集对话语音）。
-使用前请安装：pip install modelscope
-若需登录/鉴权，请先：modelscope login --token YOUR_TOKEN
+搞个锤子，只能下10条样板数据
 """
 import argparse
 import sys
@@ -15,7 +14,9 @@ if str(ROOT) not in sys.path:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="下载四川方言对话语音数据集 (799Hours)")
+    parser = argparse.ArgumentParser(
+        description="下载四川方言对话语音数据集 (799Hours)"
+    )
     parser.add_argument(
         "--out-dir",
         type=str,
@@ -31,7 +32,9 @@ def main():
 
     from modelscope.msdatasets import MsDataset
 
-    dataset_name = "DatatangBeijing/799Hours-SichuanDialectConversationalSpeechDataByMobilePhone"
+    dataset_name = (
+        "DatatangBeijing/799Hours-SichuanDialectConversationalSpeechDataByMobilePhone"
+    )
     subset_name = "default"
     split = "train"
 
