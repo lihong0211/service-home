@@ -5,6 +5,7 @@ from .vector_db_category import VectorDbCategory
 from .knowledge_base import KnowledgeBase
 from .knowledge_base_document import KnowledgeBaseDocument
 from .knowledge_base_segment import KnowledgeBaseSegment
+from .ppt_record import PptRecord
 
 __all__ = [
     "VectorDb",
@@ -13,4 +14,5 @@ __all__ = [
     "KnowledgeBase",
     "KnowledgeBaseDocument",
     "KnowledgeBaseSegment",
+    "PptRecord",
 ]

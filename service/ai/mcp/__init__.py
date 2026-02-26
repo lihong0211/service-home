@@ -7,6 +7,11 @@ from service.ai.mcp.mcp_ppt import (
     mcp_ppt_info_api,
     mcp_ppt_chat_api,
     mcp_ppt_chat_stream_api,
+    mcp_ppt_status_api,
+    mcp_ppt_download_url_api,
+    mcp_ppt_download_proxy_api,
+    mcp_ppt_editor_url_api,
+    mcp_ppt_history_api,
 )
 from service.ai.mcp.mcp_weather import (
     mcp_weather_info_api,
@@ -30,6 +35,11 @@ __all__ = [
     "mcp_ppt_info_api",
     "mcp_ppt_chat_api",
     "mcp_ppt_chat_stream_api",
+    "mcp_ppt_status_api",
+    "mcp_ppt_download_url_api",
+    "mcp_ppt_download_proxy_api",
+    "mcp_ppt_editor_url_api",
+    "mcp_ppt_history_api",
     "mcp_weather_info_api",
     "mcp_weather_chat_api",
     "mcp_weather_chat_stream_api",

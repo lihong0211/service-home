@@ -13,6 +13,11 @@ from service.ai.mcp import (
     mcp_ppt_info_api,
     mcp_ppt_chat_api,
     mcp_ppt_chat_stream_api,
+    mcp_ppt_status_api,
+    mcp_ppt_download_url_api,
+    mcp_ppt_download_proxy_api,
+    mcp_ppt_editor_url_api,
+    mcp_ppt_history_api,
     mcp_weather_info_api,
     mcp_weather_chat_api,
     mcp_weather_chat_stream_api,
@@ -77,6 +82,7 @@ from service.ai.vector_db import (
 )
 from service.ai.a2a import a2a_chain_api, a2a_chain_stream_api
 from service.ai.finetuning.finetuning import finetuning_chat_api
+from service.ai.docs import service_ai_doc_api
 
 
 def register_ai(bp):
@@ -387,6 +393,36 @@ def register_ai(bp):
         methods=["POST"],
     )
     bp.add_url_rule(
+        "/ai/mcp-ppt/status",
+        "mcp_ppt_status",
+        mcp_ppt_status_api,
+        methods=["GET"],
+    )
+    bp.add_url_rule(
+        "/ai/mcp-ppt/download-url",
+        "mcp_ppt_download_url",
+        mcp_ppt_download_url_api,
+        methods=["GET"],
+    )
+    bp.add_url_rule(
+        "/ai/mcp-ppt/download",
+        "mcp_ppt_download",
+        mcp_ppt_download_proxy_api,
+        methods=["GET"],
+    )
+    bp.add_url_rule(
+        "/ai/mcp-ppt/editor",
+        "mcp_ppt_editor",
+        mcp_ppt_editor_url_api,
+        methods=["GET"],
+    )
+    bp.add_url_rule(
+        "/ai/mcp-ppt/history",
+        "mcp_ppt_history",
+        mcp_ppt_history_api,
+        methods=["GET"],
+    )
+    bp.add_url_rule(
         "/ai/mcp-weather/info",
         "mcp_weather_info",
         mcp_weather_info_api,
@@ -459,4 +495,12 @@ def register_ai(bp):
         "finetuning_chat",
         finetuning_chat_api,
         methods=["POST"],
+    )
+
+    # service/ai 技术文档
+    bp.add_url_rule(
+        "/ai/docs/<int:doc_id>",
+        "service_ai_doc",
+        service_ai_doc_api,
+        methods=["GET"],
     )

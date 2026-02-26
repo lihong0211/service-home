@@ -56,14 +56,25 @@ from service.ai.stt import register_stt_ws
 
 register_stt_ws(sock)
 
+# 确保所有 Model 在 create_all() 前已导入，否则对应表不会被创建
+import model.ai      # noqa: F401  PptRecord 等 AI 相关表
+import model.payment  # noqa: F401  PayOrder 支付订单表
+
 # 初始化数据库表
 # 注意：如果之前有连接池缓存，需要先清理
 try:
     with app.app_context():
-        # 清理旧的连接池（如果有）
         if hasattr(db.engine, 'dispose'):
             db.engine.dispose(close=True)
-        db.create_all()
+        # 主库（english）
+        db.Model.metadata.create_all(bind=db.engine)
+        # ai 库（ppt_record / pay_order 等带 __bind_key__="ai" 的表）
+        try:
+            ai_engine = db.engines.get("ai")
+            if ai_engine:
+                db.Model.metadata.create_all(bind=ai_engine)
+        except Exception as _e:
+            print(f"[DB Init] ai bind skip: {_e}", flush=True)
 except Exception as e:
     # 如果数据库连接失败，打印错误但不阻止应用启动
     print(f"[DB Init Warning] 数据库初始化失败: {e}", flush=True)
