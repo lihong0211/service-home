@@ -2,6 +2,14 @@
 """
 应用初始化
 """
+import sys
+from pathlib import Path
+
+# 保证以 app/app.py 直接运行时，项目根目录在 sys.path 中
+_root = Path(__file__).resolve().parent.parent
+if str(_root) not in sys.path:
+    sys.path.insert(0, str(_root))
+
 from urllib.parse import quote_plus
 from flask import Flask
 from flask_sqlalchemy import SQLAlchemy

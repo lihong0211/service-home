@@ -18,19 +18,25 @@ _base_model_tokenizer = None  # (base_model, tokenizer)，用于对比输出
 # 默认使用 1.5B + 医疗 LoRA 作为前端问答基础（轻量、响应快）
 _DEFAULT_MODEL_NAME = "Qwen2.5-1.5B-Instruct"
 
-# 前端选择的 LoRA 类型：medical=医疗问诊，legal=法律咨询；对应 lora/ 下目录名（None 表示用 get_latest_lora_dir）
+# 前端选择的 LoRA 类型：medical=医疗问诊，legal=法律咨询，airpig=空气小猪客服；对应 lora/ 下目录名（None 表示用 get_latest_lora_dir）
 LORA_TYPE_DIRS = {
     "medical": None,  # 使用最新 20260224_Qwen2.5-1.5B-Instruct 等
     "legal": "20260225_Qwen2.5-1.5B-Instruct-legal",
+    "airpig": None,   # 使用最新 20260301_Qwen2.5-1.5B-Instruct-airpig 等
+}
+# 当 LORA_TYPE_DIRS[type] 为 None 时，用此 model_name 找最新 lora 目录（目录名后缀 _Qwen2.5-1.5B-Instruct 等）
+LORA_TYPE_MODEL_NAME = {
+    "medical": "Qwen2.5-1.5B-Instruct",
+    "airpig": "Qwen2.5-1.5B-Instruct-airpig",
 }
 
 
 def _get_paths(lora_type="medical"):
     """解析 base 模型与 LoRA 适配器路径。
 
-    - lora_type: "medical" | "legal"，决定使用哪一版 LoRA。
+    - lora_type: "medical" | "legal" | "airpig"，决定使用哪一版 LoRA。
     - Base 模型：项目根 / models / Qwen / {FINETUNING_MODEL_NAME}
-    - LoRA：LORA_TYPE_DIRS[lora_type] 指定目录名时用 lora/{目录名}，否则用 get_latest_lora_dir（医疗）。
+    - LoRA：LORA_TYPE_DIRS[lora_type] 指定目录名时用 lora/{目录名}，否则用 get_latest_lora_dir。
     """
     from service.ai.finetuning.paths import get_finetuning_root, get_latest_lora_dir, get_project_root
 
@@ -46,7 +52,9 @@ def _get_paths(lora_type="medical"):
         if dir_name:
             lora = str(project_root / "lora" / dir_name)
         else:
-            latest = get_latest_lora_dir(get_finetuning_root(), model_name=model_name)
+            # medical / airpig 等：按类型取对应 model_name 找最新 lora 目录
+            lookup_name = LORA_TYPE_MODEL_NAME.get(lora_type, _DEFAULT_MODEL_NAME)
+            latest = get_latest_lora_dir(get_finetuning_root(), model_name=lookup_name)
             legacy = file_path.parent / "lora_model_medical_hf"
             lora = str(latest) if (latest and latest.is_dir()) else str(legacy)
     return base, lora
@@ -180,6 +188,28 @@ def _run_one_model(model, tokenizer, prompt, gen_kw):
     return tokenizer.decode(gen_ids, skip_special_tokens=True).strip()
 
 
+# 空气小猪推理时强制注入的系统提示，避免基座/LoRA 把「空气小猪」联想成阿里云、空调、游戏等
+AIRPIG_SYSTEM_PROMPT = (
+    "你是空气小猪的客服助手。空气小猪是一款以即时通讯为核心的语言环境产品，"
+    "帮助用户把日常聊天内容转换成自己正在学习的目标语言并朗读，形成长期外语学习环境。"
+    "重要：空气小猪不是阿里云/分布式文件系统，不是空调/制冷/环保设备，不是游戏或手游。"
+    "请仅根据上述产品定义回答。若问「解决什么核心问题」，应回答：学外语无法进入日常生活、输入输出割裂、材料与生活无关难以坚持等；"
+    "空气小猪通过重用已有聊天内容，为用户建立长期、低成本、真实相关的外语环境。"
+)
+
+
+def _inject_airpig_system(messages):
+    """当使用空气小猪 LoRA 时，在 messages 前注入产品定义，避免模型幻觉成游戏等。"""
+    if not messages or not isinstance(messages, list):
+        return messages
+    inject = {"role": "system", "content": AIRPIG_SYSTEM_PROMPT}
+    first = (messages[0].get("role") or "").strip().lower()
+    if first == "system":
+        # 已有 system 时插在原有 system 之后、user 之前，保证产品定义优先
+        return [messages[0], inject] + list(messages[1:])
+    return [inject] + list(messages)
+
+
 def _messages_to_input(messages, tokenizer):
     """将 OpenAI 风格 messages 转为模型输入。Qwen2.5 使用 apply_chat_template。"""
     if not messages or not isinstance(messages, list):
@@ -235,9 +265,11 @@ def chat(messages, stream=False, options=None, lora_type="medical"):
     :param messages: [{"role":"user"|"assistant"|"system","content":"..."}, ...]
     :param stream: 是否流式返回
     :param options: 可选 {"temperature", "num_predict", "top_p", "repeat_penalty"}
-    :param lora_type: "medical" | "legal"，选择医疗或法律 LoRA
+    :param lora_type: "medical" | "legal" | "airpig"，选择医疗、法律或空气小猪客服 LoRA
     :return: stream=False 时返回完整 content 字符串；stream=True 时返回生成器，yield 文本块。
     """
+    if lora_type == "airpig":
+        messages = _inject_airpig_system(messages)
     model, tokenizer = get_model(lora_type=lora_type)
     prompt = _messages_to_input(messages, tokenizer)
     gen_kw = _gen_kwargs(options, tokenizer)
@@ -275,9 +307,11 @@ def chat_sync(messages, options=None):
 def chat_sync_compare(messages, options=None, lora_type="medical"):
     """
     非流式：同时用 base（1.5B 原版）与 base+LoRA（医疗/法律等）各生成一次，返回两段回复便于对比。
-    :param lora_type: "medical" | "legal"
+    :param lora_type: "medical" | "legal" | "airpig"
     :return: {"base": "基座回复", "lora": "LoRA 回复"}
     """
+    if lora_type == "airpig":
+        messages = _inject_airpig_system(messages)
     lora_model, tokenizer = get_model(lora_type=lora_type)
     base_model, _ = get_base_model()
     prompt = _messages_to_input(messages, tokenizer)
@@ -296,11 +330,13 @@ def chat_stream_compare(messages, options=None, lora_type="medical"):
     """
     流式：base 与 LoRA 两路并行生成，按到达顺序 yield (source, chunk)，source 为 "base" 或 "lora"。
     前端可同时往两栏追加内容。
-    :param lora_type: "medical" | "legal"
+    :param lora_type: "medical" | "legal" | "airpig"
     """
     import torch
     from transformers import TextIteratorStreamer
 
+    if lora_type == "airpig":
+        messages = _inject_airpig_system(messages)
     base_model, tokenizer = get_base_model()
     lora_model, _ = get_model(lora_type=lora_type)
     prompt = _messages_to_input(messages, tokenizer)
@@ -363,6 +399,20 @@ def chat_stream_compare(messages, options=None, lora_type="medical"):
     t_clora.join()
 
 
+# 前端「选择 LORA 模型」列表：id 用于请求体 lora/model_type，name/tag 用于展示
+LORA_OPTIONS = [
+    {"id": "medical", "name": "医疗问诊 LoRA", "tag": "医疗"},
+    {"id": "legal", "name": "法律咨询 LoRA", "tag": "法律"},
+    {"id": "airpig", "name": "空气小猪客服助手", "tag": "客服"},
+]
+
+
+def list_lora_options_api():
+    """GET /ai/finetuning/lora-options：返回可选 LoRA 列表，供前端选择模型。"""
+    from flask import jsonify
+    return jsonify({"code": 0, "msg": "ok", "data": LORA_OPTIONS})
+
+
 def finetuning_chat_api():
     """Flask 视图：POST /ai/finetuning/chat。请求体与 /ai/chat 兼容，返回 JSON 或 SSE。"""
     from flask import request, Response, jsonify, stream_with_context
@@ -378,7 +428,7 @@ def finetuning_chat_api():
     stream = data.get("stream", False)
     compare = data.get("compare", False)
     options = data.get("options", {})
-    # 前端选择对比的 LoRA：medical=医疗问诊，legal=法律咨询
+    # 前端选择 LoRA：medical=医疗问诊，legal=法律咨询，airpig=空气小猪客服
     lora_type = (data.get("lora") or data.get("model_type") or "medical").strip().lower()
     if lora_type not in LORA_TYPE_DIRS:
         lora_type = "medical"

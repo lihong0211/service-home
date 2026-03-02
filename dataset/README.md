@@ -5,3 +5,4 @@
 ## 子目录
 
 - **self_instruct/**：Self-Instruct 指令数据生成（从种子指令 + 大模型批量生成新指令，输出 Alpaca 风格 JSONL）。详见 [self_instruct/README.md](self_instruct/README.md)。
+- **空气小猪/**：空气小猪产品概念衍生的客服/问答训练数据（Alpaca 风格 JSONL + JSON），用于 SFT、FAQ 或 RAG。详见 [空气小猪/README.md](空气小猪/README.md)。

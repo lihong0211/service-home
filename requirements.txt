@@ -9,9 +9,8 @@ gunicorn==21.2.0
 
 # AI
 # 向量检索（embedding 模块）
-numpy>=1.24.0,<2
-faiss-cpu>=1.7.0
 numpy>=2.2.6
+faiss-cpu>=1.7.0
 PyPDF2>=3.0.0
 pycryptodome>=3.19.0
 python-docx>=1.0.0
@@ -42,6 +41,10 @@ langchain-community>=0.3.0
 langchain-openai>=0.2.0
 # LangGraph 图工作流（循环、并行、条件路由、人机协作等）
 langgraph>=0.2.0
+# 股票行情数据（A股实时/历史）
+akshare>=1.12.0
+# RSS 新闻解析
+feedparser>=6.0.0
 python-dateutil==2.8.2
 mcp>=1.26.0
 modelscope>=1.30.0

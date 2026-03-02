@@ -81,7 +81,7 @@ from service.ai.vector_db import (
     search_api as vector_db_search_api,
 )
 from service.ai.a2a import a2a_chain_api, a2a_chain_stream_api
-from service.ai.finetuning.finetuning import finetuning_chat_api
+from service.ai.finetuning.finetuning import finetuning_chat_api, list_lora_options_api
 from service.ai.docs import service_ai_doc_api
 
 
@@ -489,12 +489,18 @@ def register_ai(bp):
         methods=["POST"],
     )
 
-    # 微调模型聊天（如 Qwen2.5-7B 医疗 LoRA），与 /ai/chat 请求格式兼容
+    # 微调模型聊天（医疗/法律/空气小猪 LoRA），与 /ai/chat 请求格式兼容
     bp.add_url_rule(
         "/ai/finetuning/chat",
         "finetuning_chat",
         finetuning_chat_api,
         methods=["POST"],
+    )
+    bp.add_url_rule(
+        "/ai/finetuning/lora-options",
+        "finetuning_lora_options",
+        list_lora_options_api,
+        methods=["GET"],
     )
 
     # service/ai 技术文档
