@@ -85,7 +85,42 @@ class AliDNSClient:
             return "DomainRecordDuplicate" in str(e)
 
 
+def _get_stable_ipv6_from_ifconfig():
+    """从本机网卡读取稳定的公网 IPv6（仅取 autoconf secured，排除 temporary）。"""
+    try:
+        out = subprocess.run(
+            ["ifconfig"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if out.returncode != 0 or not out.stdout:
+            return None
+        for line in out.stdout.splitlines():
+            line = line.strip()
+            if not line.startswith("inet6 "):
+                continue
+            if "temporary" in line:
+                continue
+            if "secured" not in line:
+                continue
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            addr = parts[1].split("%")[0]
+            if addr == "::1" or addr.startswith("fe80:"):
+                continue
+            return addr
+        return None
+    except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
+        return None
+
+
 def get_current_ipv6():
+    # 优先用本机网卡的稳定地址，避免拿到临时隐私地址
+    ip = _get_stable_ipv6_from_ifconfig()
+    if ip:
+        return ip
     try:
         out = subprocess.run(
             ["curl", "-s", "-m", "15", CONFIG["IP_SERVICE"]],

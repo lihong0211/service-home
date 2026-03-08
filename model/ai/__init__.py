@@ -6,6 +6,7 @@ from .knowledge_base import KnowledgeBase
 from .knowledge_base_document import KnowledgeBaseDocument
 from .knowledge_base_segment import KnowledgeBaseSegment
 from .ppt_record import PptRecord
+from .video_gen_task import VideoGenTask
 
 __all__ = [
     "VectorDb",
@@ -15,4 +16,5 @@ __all__ = [
     "KnowledgeBaseDocument",
     "KnowledgeBaseSegment",
     "PptRecord",
+    "VideoGenTask",
 ]

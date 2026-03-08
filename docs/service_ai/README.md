@@ -50,6 +50,7 @@
 | 07 | [对话能力层](./07_chat.md) | `chat.py`、`ollama_chat.py` | 本地 Ollama、流式 SSE、OCR 视觉去重 |
 | 08 | [工具能力层](./08_tools.md) | `function_call.py`、`text2sql.py`、`tts.py`、`stt.py`、`image_gen.py` | Function Calling、Text2SQL、Edge-TTS、Whisper、SDXL |
 | 09 | [模型微调实验层](./09_finetuning.md) | `finetuning/` | LoRA/QLoRA、GRPO/R1、Unsloth、视觉微调 |
+| 10 | [前端对接文档](./10_frontend_api.md) | `routes/ai.py`、`agent/`、`langchain.py` | Agent/LangGraph 接口、状态与步骤、SSE 流式 |
 
 ---
 
@@ -119,3 +120,5 @@ MCP 工具集层 (06)
 **我想了解如何在本地跑 LLM 对话** → [07 对话能力层](./07_chat.md)
 
 **我想了解如何微调一个领域专用模型** → [09 微调实验层](./09_finetuning.md)
+
+**前端对接 Agent / LangGraph（状态、步骤、流式）** → [10 前端对接文档](./10_frontend_api.md)

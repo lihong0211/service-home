@@ -6,8 +6,9 @@ Gunicorn 配置文件
 import multiprocessing
 import os
 
-# 服务器配置
-bind = f"0.0.0.0:{os.environ.get('PORT', 3000)}"
+# 服务器配置：绑定 [::] 在多数系统上双栈，同时接受 IPv4/IPv6，云服务器走 IPv6 不会 Connection refused
+_port = os.environ.get("PORT", 3000)
+bind = f"[::]:{_port}"
 workers = multiprocessing.cpu_count() * 2 + 1  # 推荐的工作进程数
 worker_class = "sync"
 worker_connections = 1000
@@ -35,6 +36,21 @@ limit_request_field_size = 8190
 # 预加载应用：在 master 进程 import 一次，background services 只启动一次，
 # 各 worker fork 后继承 _bg_services_started=True，不会重复启动后台服务
 preload_app = True
+
+
+def post_fork(server, worker):
+    """fork 后丢弃主进程的 DB 连接，避免 worker 用坏连接导致 exit code 1。"""
+    try:
+        from app.app import db
+        if hasattr(db, "engine") and db.engine is not None:
+            db.engine.dispose()
+        for key in getattr(db, "engines", {}) or {}:
+            eng = db.engines.get(key)
+            if eng is not None and hasattr(eng, "dispose"):
+                eng.dispose()
+    except Exception:
+        pass
+
 
 # 优雅重启（worker 处理完当前请求后再退出）
 graceful_timeout = 60

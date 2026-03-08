@@ -1,8 +1,10 @@
 #!/usr/bin/env python
 # coding: utf-8
 """
-Qwen2.5-1.5B 法律咨询微调 - 使用法律 QA 数据集训练 LoRA。
-数据来源：dataset/【数据集】legal/qa_corpus.json（JSONL，question + answers + category）
+Qwen2.5-1.5B 法律咨询微调 - 使用法律 QA + 罪名知识数据集训练 LoRA。
+数据来源：
+- dataset/【数据集】legal/qa_corpus.json（JSONL，question + answers + category）
+- dataset/【数据集】legal/kg_crime.json（JSONL，罪名概念/特征/认定/处罚）
 """
 
 import os
@@ -40,7 +42,9 @@ _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(_SCRIPT_DIR)))
 BASE_MODEL_PATH = os.path.join(_PROJECT_ROOT, "models", "Qwen", "Qwen2.5-1.5B-Instruct")
 if not os.path.isdir(BASE_MODEL_PATH):
-    BASE_MODEL_PATH = os.path.join(_SCRIPT_DIR, "models", "Qwen", "Qwen2.5-1.5B-Instruct")
+    BASE_MODEL_PATH = os.path.join(
+        _SCRIPT_DIR, "models", "Qwen", "Qwen2.5-1.5B-Instruct"
+    )
 _LOCAL_MODEL = os.path.isdir(BASE_MODEL_PATH)
 
 # 法律 LoRA 单独目录，不与医疗混用：lora/{日期}_Qwen2.5-1.5B-Instruct-legal
@@ -110,8 +114,13 @@ lora_config = LoraConfig(
     r=16,
     lora_alpha=16,
     target_modules=[
-        "q_proj", "k_proj", "v_proj", "o_proj",
-        "gate_proj", "up_proj", "down_proj",
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj",
     ],
     lora_dropout=0,
     bias="none",
@@ -140,7 +149,7 @@ def formatting_prompts_func(examples):
 
 
 # 数据量：qa_corpus.json 约 3 万条，可限量做本地调试
-MAX_TRAIN_SAMPLES = 10000  # None 表示全量
+MAX_TRAIN_SAMPLES = 50000  # None 表示全量
 _seed = seed
 
 dataset = load_legal_data(
@@ -191,6 +200,7 @@ model.save_pretrained(LORA_SAVE_DIR)
 tokenizer.save_pretrained(LORA_SAVE_DIR)
 print(f"LoRA 已保存到: {LORA_SAVE_DIR}")
 
+
 # ---------- 简单推理示例 ----------
 def generate_legal_response(question, model=None, tokenizer=None):
     m = model or trainer.model
@@ -207,7 +217,7 @@ def generate_legal_response(question, model=None, tokenizer=None):
         do_sample=True,
         pad_token_id=tok.pad_token_id or tok.eos_token_id,
     )
-    gen = out[0][enc["input_ids"].shape[1]:]
+    gen = out[0][enc["input_ids"].shape[1] :]
     return tok.decode(gen, skip_special_tokens=True).strip()
 
 
