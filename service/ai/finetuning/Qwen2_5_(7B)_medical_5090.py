@@ -16,6 +16,12 @@ if _bootstrap_root not in sys.path:
     sys.path.insert(0, _bootstrap_root)
 
 import torch
+# 无外网时 Unsloth 会请求 huggingface.co 做统计检查导致报错，先 patch 再 import
+try:
+    import unsloth.models._utils as _u
+    _u.get_statistics = lambda *a, **k: None
+except Exception:
+    pass
 from unsloth import FastLanguageModel, is_bfloat16_supported
 from trl import SFTTrainer
 from transformers import TrainingArguments
@@ -50,13 +56,21 @@ print(f"本次运行目录: {_RUN_PARENT} -> lora: {LORA_SAVE_DIR}, outputs_hf: 
 max_seq_length = 2048
 dtype = None
 load_in_4bit = os.environ.get("USE_4BIT", "1").strip() not in ("0", "false", "no")  # 默认 4bit，5090 可设 USE_4BIT=0 试全量
+_local_model = os.path.isdir(BASE_MODEL_PATH)
+if _local_model:
+    print(f"使用本地基座: {BASE_MODEL_PATH}")
+else:
+    print(f"将从 HF 加载基座: {BASE_MODEL_PATH}（若无缓存会较慢）")
 
+print("正在加载基座模型（Unsloth）...")
 model, tokenizer = FastLanguageModel.from_pretrained(
     model_name=BASE_MODEL_PATH,
     max_seq_length=max_seq_length,
     dtype=dtype,
     load_in_4bit=load_in_4bit,
+    local_files_only=_local_model,
 )
+print("基座加载完成，正在添加 LoRA...")
 
 model = FastLanguageModel.get_peft_model(
     model,
@@ -70,6 +84,7 @@ model = FastLanguageModel.get_peft_model(
     use_rslora=False,
     loftq_config=None,
 )
+print("LoRA 添加完成。")
 
 # ---------- 数据 ----------
 medical_prompt = """你是一个专业的医疗助手。请根据患者的问题提供专业、准确的回答。
