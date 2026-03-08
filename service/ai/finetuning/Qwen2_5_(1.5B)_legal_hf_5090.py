@@ -2,7 +2,8 @@
 # coding: utf-8
 """
 Qwen2.5-1.5B 法律咨询微调 - RTX 5090（32GB）版本。
-不做 4bit 量化，全量 bf16 + 更大 batch，适合 5090/4090/3090 等大显存显卡。
+默认全量 bf16 + batch=8 + gradient checkpointing 以适配 32GB。
+若仍 OOM，可启用 4bit：USE_4BIT=1 python -m ...
 
 数据来源同 Qwen2_5_(1.5B)_legal_hf.py：
 - dataset/【数据集】legal/qa_corpus.json
@@ -25,8 +26,9 @@ from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     PreTrainedTokenizerFast,
+    BitsAndBytesConfig,
 )
-from peft import LoraConfig, get_peft_model
+from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from trl import SFTTrainer, SFTConfig
 
 from service.ai.finetuning.dataset_legal import load_legal_data
@@ -55,11 +57,12 @@ LORA_SAVE_DIR = str(get_lora_dir(_RUN_PARENT))
 OUTPUT_DIR = str(get_outputs_hf_dir(_RUN_PARENT))
 print(f"本次运行目录: {_RUN_PARENT} -> lora: {LORA_SAVE_DIR}, outputs_hf: {OUTPUT_DIR}")
 
-# ---------- 设备与精度（5090：全量 bf16，不量化）----------
+# ---------- 设备与精度 -----------
+# 可通过环境变量 USE_4BIT=1 启用 4bit 量化，避免 OOM
 if torch.cuda.is_available():
     device = "cuda"
-    use_4bit = False  # 5090 32GB 不量化
-    use_bf16 = torch.cuda.is_bf16_supported()
+    use_4bit = os.environ.get("USE_4BIT", "").strip() in ("1", "true", "yes")
+    use_bf16 = torch.cuda.is_bf16_supported() and not use_4bit
 else:
     device = "mps" if (getattr(torch.backends, "mps", None) and torch.backends.mps.is_available()) else "cpu"
     use_4bit = False
@@ -80,17 +83,35 @@ else:
     tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL_PATH, trust_remote_code=True)
 EOS_TOKEN = getattr(tokenizer, "eos_token", None) or "<|endoftext|>"
 
-# ---------- 加载模型（全量 bf16/fp16，无量化）----------
-dtype = torch.bfloat16 if (device == "cuda" and use_bf16) else torch.float16
-model = AutoModelForCausalLM.from_pretrained(
-    BASE_MODEL_PATH,
-    torch_dtype=dtype,
-    device_map="auto" if device == "cuda" else None,
-    trust_remote_code=True,
-    local_files_only=_LOCAL_MODEL,
-)
-if device != "cuda":
-    model = model.to(device)
+# ---------- 加载模型 -----------
+if use_4bit:
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_compute_dtype=(
+            torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        ),
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_use_double_quant=True,
+    )
+    model = AutoModelForCausalLM.from_pretrained(
+        BASE_MODEL_PATH,
+        quantization_config=bnb_config,
+        device_map="auto",
+        trust_remote_code=True,
+        local_files_only=_LOCAL_MODEL,
+    )
+    model = prepare_model_for_kbit_training(model)
+else:
+    _load_dtype = torch.bfloat16 if (device == "cuda" and use_bf16) else torch.float16
+    model = AutoModelForCausalLM.from_pretrained(
+        BASE_MODEL_PATH,
+        torch_dtype=_load_dtype,
+        device_map="auto" if device == "cuda" else None,
+        trust_remote_code=True,
+        local_files_only=_LOCAL_MODEL,
+    )
+    if device != "cuda":
+        model = model.to(device)
 
 # ---------- LoRA ----------
 lora_config = LoraConfig(
@@ -145,12 +166,18 @@ if MAX_TRAIN_SAMPLES is not None:
     print(f"截取 {len(dataset)} 条用于训练")
 dataset = dataset.map(formatting_prompts_func, batched=True)
 
-# ---------- 训练参数（5090 大 batch，无梯度检查点可提速）----------
-# 5090 32GB：1.5B 全量 + LoRA 可轻松跑 per_device 16~32
-per_device_batch = 16 if device == "cuda" else 4
-gradient_accumulation_steps = 4  # effective batch = 16*4 = 64
-# 显存仍紧张时可开 gradient_checkpointing 或减小 per_device_batch
-use_gradient_checkpointing = False  # 5090 关掉可提速
+# ---------- 训练参数（32GB 下避免 OOM：适中 batch + gradient checkpointing）----------
+if use_4bit:
+    per_device_batch = 8
+    gradient_accumulation_steps = 8
+    use_gradient_checkpointing = True
+    optim_name = "adamw_8bit"
+else:
+    # 全量 bf16：batch 不宜过大，否则激活显存爆
+    per_device_batch = 8 if device == "cuda" else 4
+    gradient_accumulation_steps = 8  # effective batch = 64
+    use_gradient_checkpointing = True
+    optim_name = "adamw_torch"
 
 sft_args = SFTConfig(
     output_dir=OUTPUT_DIR,
@@ -162,7 +189,7 @@ sft_args = SFTConfig(
     fp16=(device == "cuda" and not use_bf16),
     bf16=(device == "cuda" and use_bf16),
     logging_steps=1,
-    optim="adamw_torch",
+    optim=optim_name,
     weight_decay=0.01,
     lr_scheduler_type="linear",
     seed=seed,
