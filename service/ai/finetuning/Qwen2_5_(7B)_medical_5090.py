@@ -219,7 +219,7 @@ def formatting_prompts_func(examples):
 
 
 # 先跑少量数据看效果，改大或设为 None 表示全量
-MAX_TRAIN_SAMPLES = 500
+MAX_TRAIN_SAMPLES = None
 _seed = 3407
 
 dataset = load_medical_data(MEDICAL_DATA_DIR)
