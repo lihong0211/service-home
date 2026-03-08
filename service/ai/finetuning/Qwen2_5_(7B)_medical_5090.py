@@ -22,6 +22,28 @@ try:
     _u.get_statistics = lambda *a, **k: None
 except Exception:
     pass
+# 兼容云服务器：transformers 在 tokenizer 里把 json.load 的 dict 当 .model_type 用会报错，运行时 patch json.load
+def _patch_tokenizer_config_json():
+    import json as _json_mod
+    if getattr(_json_mod, "_config_wrap_patch", False):
+        return
+    _orig = _json_mod.load
+    class _ConfigWrap:
+        __slots__ = ("_d",)
+        def __init__(self, d): self._d = d
+        def __getattr__(self, k): return self._d.get(k)
+        def get(self, k, default=None): return self._d.get(k, default)
+    def _patched(*a, **k):
+        data = _orig(*a, **k)
+        if isinstance(data, dict) and "model_type" in data and "transformers_version" in data:
+            return _ConfigWrap(data)
+        return data
+    _json_mod.load = _patched
+    _json_mod._config_wrap_patch = True
+try:
+    _patch_tokenizer_config_json()
+except Exception:
+    pass
 from unsloth import FastLanguageModel, is_bfloat16_supported
 from trl import SFTTrainer
 from transformers import TrainingArguments
