@@ -174,7 +174,7 @@ dataset = dataset.map(formatting_prompts_func, batched=True)
 per_device_batch = 8
 gradient_accumulation_steps = 8
 warmup_steps = 2
-num_train_epochs = 3
+num_train_epochs = 1
 use_gradient_checkpointing = True
 optim_name = "adamw_8bit" if use_4bit else "adamw_torch"
 
