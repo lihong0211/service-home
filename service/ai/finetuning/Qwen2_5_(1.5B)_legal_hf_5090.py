@@ -156,7 +156,7 @@ def formatting_prompts_func(examples):
     return {"text": texts}
 
 
-MAX_TRAIN_SAMPLES = 10000
+MAX_TRAIN_SAMPLES = None
 _seed = seed
 
 dataset = load_legal_data(
