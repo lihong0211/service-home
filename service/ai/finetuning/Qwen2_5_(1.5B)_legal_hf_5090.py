@@ -193,6 +193,7 @@ sft_args = SFTConfig(
     lr_scheduler_type="linear",
     seed=seed,
     report_to="none",
+    save_strategy="no",  # 暂时不保存 outputs_hf/checkpoint-*，只保留训练结束时的 LoRA
     gradient_checkpointing=use_gradient_checkpointing,
     dataset_text_field="text",
     max_length=max_seq_length,
