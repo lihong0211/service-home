@@ -16,30 +16,50 @@ if _bootstrap_root not in sys.path:
     sys.path.insert(0, _bootstrap_root)
 
 import torch
+
 # 无外网时 Unsloth 会请求 huggingface.co 做统计检查导致报错，先 patch 再 import
 try:
     import unsloth.models._utils as _u
+
     _u.get_statistics = lambda *a, **k: None
 except Exception:
     pass
+
+
 # 兼容云服务器：transformers 在 tokenizer 里把 json.load 的 dict 当 .model_type 用会报错，运行时 patch json.load
 def _patch_tokenizer_config_json():
     import json as _json_mod
+
     if getattr(_json_mod, "_config_wrap_patch", False):
         return
     _orig = _json_mod.load
+
     class _ConfigWrap:
         __slots__ = ("_d",)
-        def __init__(self, d): self._d = d
-        def __getattr__(self, k): return self._d.get(k)
-        def get(self, k, default=None): return self._d.get(k, default)
+
+        def __init__(self, d):
+            self._d = d
+
+        def __getattr__(self, k):
+            return self._d.get(k)
+
+        def get(self, k, default=None):
+            return self._d.get(k, default)
+
     def _patched(*a, **k):
         data = _orig(*a, **k)
-        if isinstance(data, dict) and "model_type" in data and "transformers_version" in data:
+        if (
+            isinstance(data, dict)
+            and "model_type" in data
+            and "transformers_version" in data
+        ):
             return _ConfigWrap(data)
         return data
+
     _json_mod.load = _patched
     _json_mod._config_wrap_patch = True
+
+
 try:
     _patch_tokenizer_config_json()
 except Exception:
@@ -61,7 +81,9 @@ from service.ai.finetuning.paths import (
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(_SCRIPT_DIR)))
 BASE_MODEL_PATH = os.path.join(_PROJECT_ROOT, "models", "Qwen", "Qwen2.5-1.5B-Instruct")
 if not os.path.isdir(BASE_MODEL_PATH):
-    BASE_MODEL_PATH = os.path.join(_SCRIPT_DIR, "models", "Qwen", "Qwen2.5-1.5B-Instruct")
+    BASE_MODEL_PATH = os.path.join(
+        _SCRIPT_DIR, "models", "Qwen", "Qwen2.5-1.5B-Instruct"
+    )
 
 MEDICAL_DATA_DIR = os.path.join(_PROJECT_ROOT, "dataset", "【数据集】中文医疗数据")
 if not os.path.isdir(MEDICAL_DATA_DIR):
@@ -77,7 +99,11 @@ print(f"本次运行目录: {_RUN_PARENT} -> lora: {LORA_SAVE_DIR}, outputs_hf: 
 # ---------- 模型参数 ----------
 max_seq_length = 2048
 dtype = None
-load_in_4bit = os.environ.get("USE_4BIT", "1").strip() not in ("0", "false", "no")  # 默认 4bit，5090 可设 USE_4BIT=0 试全量
+load_in_4bit = os.environ.get("USE_4BIT", "1").strip() not in (
+    "0",
+    "false",
+    "no",
+)  # 默认 4bit，5090 可设 USE_4BIT=0 试全量
 _local_model = os.path.isdir(BASE_MODEL_PATH)
 if _local_model:
     print(f"使用本地基座: {BASE_MODEL_PATH}")
@@ -97,7 +123,15 @@ print("基座加载完成，正在添加 LoRA...")
 model = FastLanguageModel.get_peft_model(
     model,
     r=16,
-    target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+    target_modules=[
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj",
+    ],
     lora_alpha=16,
     lora_dropout=0,
     bias="none",
@@ -162,7 +196,13 @@ def load_medical_data(data_dir):
                             break
                     if not q or not a or len(q) > 200 or len(a) > 200:
                         continue
-                    data.append({"instruction": "请回答以下医疗相关问题", "input": q, "output": a})
+                    data.append(
+                        {
+                            "instruction": "请回答以下医疗相关问题",
+                            "input": q,
+                            "output": a,
+                        }
+                    )
             except Exception as e:
                 print(f"处理 {f} 出错: {e}")
     if not data:
@@ -178,17 +218,24 @@ def formatting_prompts_func(examples):
     return {"text": texts}
 
 
+# 先跑少量数据看效果，改大或设为 None 表示全量
+MAX_TRAIN_SAMPLES = 500
+_seed = 3407
+
 dataset = load_medical_data(MEDICAL_DATA_DIR)
+if MAX_TRAIN_SAMPLES is not None:
+    n = min(MAX_TRAIN_SAMPLES, len(dataset))
+    dataset = dataset.shuffle(seed=_seed).select(range(n))
+    print(f"截取 {n} 条用于训练（先跑看效果）")
 dataset = dataset.map(formatting_prompts_func, batched=True)
 
 # ---------- 训练参数（5090：batch 更大，不保存 checkpoint）---------
 training_args = TrainingArguments(
     output_dir=OUTPUT_DIR,
-    per_device_train_batch_size=4,
+    per_device_train_batch_size=16,
     gradient_accumulation_steps=4,
-    warmup_steps=5,
-    max_steps=-1,
-    num_train_epochs=3,
+    warmup_steps=2,
+    num_train_epochs=1,
     learning_rate=2e-4,
     fp16=not is_bfloat16_supported(),
     bf16=is_bfloat16_supported(),
@@ -223,7 +270,9 @@ print(f"LoRA 已保存到: {LORA_SAVE_DIR}")
 # ---------- 推理示例 ----------
 def generate_medical_response(question):
     FastLanguageModel.for_inference(model)
-    inputs = tokenizer([medical_prompt.format(question, "")], return_tensors="pt").to(model.device)
+    inputs = tokenizer([medical_prompt.format(question, "")], return_tensors="pt").to(
+        model.device
+    )
     out = model.generate(
         **inputs,
         max_new_tokens=256,
@@ -233,7 +282,7 @@ def generate_medical_response(question):
         do_sample=True,
         pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
     )
-    gen = out[0][inputs["input_ids"].shape[1]:]
+    gen = out[0][inputs["input_ids"].shape[1] :]
     return tokenizer.decode(gen, skip_special_tokens=True).strip()
 
 
