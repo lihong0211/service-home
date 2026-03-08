@@ -229,10 +229,12 @@ if MAX_TRAIN_SAMPLES is not None:
     print(f"截取 {n} 条用于训练（先跑看效果）")
 dataset = dataset.map(formatting_prompts_func, batched=True)
 
-# ---------- 训练参数（5090：batch 更大，不保存 checkpoint）---------
+# ---------- 训练参数（5090：4bit 下可开大 batch 拉高显存，全量用 USE_4BIT=0）---------
+# 想多占显存：per_device 调大（如 32/64）或运行时 USE_4BIT=0 全精度
+per_device_batch = 32
 training_args = TrainingArguments(
     output_dir=OUTPUT_DIR,
-    per_device_train_batch_size=16,
+    per_device_train_batch_size=per_device_batch,
     gradient_accumulation_steps=4,
     warmup_steps=2,
     num_train_epochs=1,
