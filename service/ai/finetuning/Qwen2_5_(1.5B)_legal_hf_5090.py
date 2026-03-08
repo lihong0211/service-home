@@ -64,7 +64,11 @@ if torch.cuda.is_available():
     use_4bit = os.environ.get("USE_4BIT", "").strip() in ("1", "true", "yes")
     use_bf16 = torch.cuda.is_bf16_supported() and not use_4bit
 else:
-    device = "mps" if (getattr(torch.backends, "mps", None) and torch.backends.mps.is_available()) else "cpu"
+    device = (
+        "mps"
+        if (getattr(torch.backends, "mps", None) and torch.backends.mps.is_available())
+        else "cpu"
+    )
     use_4bit = False
     use_bf16 = False
 print(f"使用设备: {device}, 4bit: {use_4bit}, bf16: {use_bf16}")
@@ -152,7 +156,7 @@ def formatting_prompts_func(examples):
     return {"text": texts}
 
 
-MAX_TRAIN_SAMPLES = 50000
+MAX_TRAIN_SAMPLES = 10000
 _seed = seed
 
 dataset = load_legal_data(
@@ -166,25 +170,20 @@ if MAX_TRAIN_SAMPLES is not None:
     print(f"截取 {len(dataset)} 条用于训练")
 dataset = dataset.map(formatting_prompts_func, batched=True)
 
-# ---------- 训练参数（32GB 下避免 OOM：适中 batch + gradient checkpointing）----------
-if use_4bit:
-    per_device_batch = 8
-    gradient_accumulation_steps = 8
-    use_gradient_checkpointing = True
-    optim_name = "adamw_8bit"
-else:
-    # 全量 bf16：batch 不宜过大，否则激活显存爆
-    per_device_batch = 8 if device == "cuda" else 4
-    gradient_accumulation_steps = 8  # effective batch = 64
-    use_gradient_checkpointing = True
-    optim_name = "adamw_torch"
+# ---------- 训练参数（5090 大显存：大 batch + 少 warmup）----------
+per_device_batch = 8
+gradient_accumulation_steps = 8
+warmup_steps = 2
+num_train_epochs = 3
+use_gradient_checkpointing = True
+optim_name = "adamw_8bit" if use_4bit else "adamw_torch"
 
 sft_args = SFTConfig(
     output_dir=OUTPUT_DIR,
     per_device_train_batch_size=per_device_batch,
     gradient_accumulation_steps=gradient_accumulation_steps,
-    warmup_steps=2,
-    num_train_epochs=1,
+    warmup_steps=warmup_steps,
+    num_train_epochs=num_train_epochs,
     learning_rate=2e-4,
     fp16=(device == "cuda" and not use_bf16),
     bf16=(device == "cuda" and use_bf16),
@@ -198,6 +197,7 @@ sft_args = SFTConfig(
     dataset_text_field="text",
     max_length=max_seq_length,
     packing=False,
+    dataset_num_proc=2,
 )
 
 trainer = SFTTrainer(
@@ -214,22 +214,30 @@ model.save_pretrained(LORA_SAVE_DIR)
 tokenizer.save_pretrained(LORA_SAVE_DIR)
 print(f"LoRA 已保存到: {LORA_SAVE_DIR}")
 
+
 # ---------- 简单推理示例 ----------
 def generate_legal_response(question, model=None, tokenizer=None):
     m = model or trainer.model
     tok = tokenizer or getattr(trainer, "processing_class", None)
+    m.eval()
+    if getattr(tok, "pad_token", None) is None:
+        tok.pad_token = getattr(tok, "eos_token", "<|endoftext|>")
     prompt = legal_prompt.format(question, "")
     enc = tok(prompt, return_tensors="pt").to(m.device)
     gen_kwargs = {k: v for k, v in enc.items() if k != "token_type_ids"}
-    out = m.generate(
-        **gen_kwargs,
-        max_new_tokens=256,
-        temperature=0.7,
-        top_p=0.9,
-        repetition_penalty=1.1,
-        do_sample=True,
-        pad_token_id=tok.pad_token_id or tok.eos_token_id,
-    )
+    eos_id = getattr(tok, "eos_token_id", None)
+    pad_id = getattr(tok, "pad_token_id", None) or eos_id
+    with torch.no_grad():
+        out = m.generate(
+            **gen_kwargs,
+            max_new_tokens=256,
+            temperature=0.7,
+            top_p=0.9,
+            repetition_penalty=1.25,
+            do_sample=True,
+            pad_token_id=pad_id,
+            eos_token_id=eos_id,
+        )
     gen = out[0][enc["input_ids"].shape[1] :]
     return tok.decode(gen, skip_special_tokens=True).strip()
 
