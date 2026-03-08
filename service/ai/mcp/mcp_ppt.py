@@ -22,8 +22,19 @@ def _is_ssl_error(e: Exception) -> bool:
     return "ssl" in msg or "eof occurred" in msg or "unexpected_eof" in msg
 
 
+def _is_retryable_http_error(e: Exception) -> bool:
+    """502 Bad Gateway 等远端 MCP 服务间歇性错误，可重试。"""
+    try:
+        import httpx
+        if isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 502:
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def _collect_bot_run(bot: Any, messages: List[dict]) -> Tuple[List, Optional[Exception]]:
-    """Run bot.run() with automatic retry on transient SSL errors."""
+    """Run bot.run() with automatic retry on transient SSL errors and 502 Bad Gateway."""
     last_exc: Optional[Exception] = None
     for attempt in range(_SSL_RETRY_COUNT):
         try:
@@ -32,7 +43,8 @@ def _collect_bot_run(bot: Any, messages: List[dict]) -> Tuple[List, Optional[Exc
                 steps.append(response)
             return steps, None
         except Exception as e:
-            if _is_ssl_error(e) and attempt < _SSL_RETRY_COUNT - 1:
+            retryable = _is_ssl_error(e) or _is_retryable_http_error(e)
+            if retryable and attempt < _SSL_RETRY_COUNT - 1:
                 last_exc = e
                 time.sleep(_SSL_RETRY_DELAY * (attempt + 1))
                 continue

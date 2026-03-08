@@ -39,6 +39,11 @@ from service.ai.stt import (
 from service.ai.tts import speech as tts_speech
 from service.ai.image_gen import generate as image_generate
 from service.ai.video_undstanding import video_understand
+from service.ai.video_gen_task import (
+    video_gen_task_create_api,
+    video_gen_task_get_api,
+    video_gen_task_list_api,
+)
 from service.ai.knowledge import (
     list_knowledge_bases_api,
     create_knowledge_base_api,
@@ -103,6 +108,25 @@ def register_ai(bp):
     )
     bp.add_url_rule(
         "/ai/video/understand", "video_understand", video_understand, methods=["POST"]
+    )
+    # 火山方舟文生视频任务：落库与查询（Dify 可提交 task_id，后续按 task_id 查状态）
+    bp.add_url_rule(
+        "/ai/video-gen/tasks",
+        "video_gen_task_create",
+        video_gen_task_create_api,
+        methods=["POST"],
+    )
+    bp.add_url_rule(
+        "/ai/video-gen/tasks/<task_id>",
+        "video_gen_task_get",
+        video_gen_task_get_api,
+        methods=["GET"],
+    )
+    bp.add_url_rule(
+        "/ai/video-gen/tasks/list",
+        "video_gen_task_list",
+        video_gen_task_list_api,
+        methods=["GET"],
     )
 
     # 知识库（建库、上传、分段、向量化）

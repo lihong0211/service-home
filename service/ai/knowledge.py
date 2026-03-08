@@ -1125,18 +1125,55 @@ def get_document_segments_api(document_id: int):
     return jsonify({"code": 0, "msg": "ok", "data": {"list": list_, "total": len(list_)}})
 
 
+def _resolve_kb_document_path(path: str) -> str | None:
+    """
+    解析知识库文档的本地文件路径。若 path 指向的文件不存在，则尝试按当前知识库根目录解析
+    （兼容 path 为相对路径或旧 cwd 的绝对路径，例如数据在 data/knowledge_base/9 下）。
+    返回可用的绝对路径，否则返回 None。
+    """
+    if path and os.path.isfile(path):
+        return path
+    root = _knowledge_base_storage_root()
+    # 相对路径：直接拼在知识库根下
+    if path and not os.path.isabs(path):
+        candidate = os.path.normpath(os.path.join(root, path))
+        if os.path.isfile(candidate):
+            return candidate
+    # 绝对路径但文件不存在：可能是旧 cwd，取 knowledge_base/ 后的相对部分用当前 root 再拼
+    if path and os.path.isabs(path):
+        normalized = path.replace("\\", "/")
+        if "/knowledge_base/" in normalized:
+            parts = normalized.split("/knowledge_base/", 1)
+            if len(parts) == 2 and parts[1]:
+                candidate = os.path.join(root, parts[1])
+                if os.path.isfile(candidate):
+                    return candidate
+    return None
+
+
 def preview_knowledge_document_api(document_id: int):
     """
     GET /ai/knowledge-base/document/<document_id>/preview
-    根据知识库文档 id 返回文件预览。文档路径来自 knowledge_base_document.path（上传时保存到 data/knowledge_base/{kb_id}/）。
+    根据知识库文档 id 返回文件预览。文档路径来自 knowledge_base_document.path。
+    path 无效时先按当前知识库根目录解析（相对路径或旧 cwd 的绝对路径），再尝试 file_id 从上传文件解析。
     PDF 直接返回，DOCX/PPTX 转 PDF 后返回（需 LibreOffice），TXT/MD 返回文本。
     """
     from model.ai import KnowledgeBaseDocument
-    from service.ai.files import serve_file_preview
+    from service.ai.files import serve_file_preview, get_file_path
     doc = KnowledgeBaseDocument.get_by_id(document_id)
     if not doc:
         raise FileNotFoundError("文档不存在")
     path = (getattr(doc, "path", None) or "").strip()
+    path = _resolve_kb_document_path(path) if path else None
+    if not path:
+        # 仍无可用路径：若有 file_id 则从上传文件解析
+        file_id = (getattr(doc, "file_id", None) or "").strip()
+        if file_id:
+            path = get_file_path(file_id)
+            if path and os.path.isfile(path):
+                pass
+            else:
+                path = None
     if not path or not os.path.isfile(path):
         raise FileNotFoundError("文件路径无效或文件已丢失")
     cache_dir = os.path.join(_knowledge_base_storage_root(), ".preview_cache")

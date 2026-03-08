@@ -57,14 +57,14 @@ from service.ai.stt import register_stt_ws
 register_stt_ws(sock)
 
 # 确保所有 Model 在 create_all() 前已导入，否则对应表不会被创建
-import model.ai      # noqa: F401  PptRecord 等 AI 相关表
+import model.ai  # noqa: F401  PptRecord 等 AI 相关表
 import model.payment  # noqa: F401  PayOrder 支付订单表
 
 # 初始化数据库表
 # 注意：如果之前有连接池缓存，需要先清理
 try:
     with app.app_context():
-        if hasattr(db.engine, 'dispose'):
+        if hasattr(db.engine, "dispose"):
             db.engine.dispose(close=True)
         # 主库（english）
         db.Model.metadata.create_all(bind=db.engine)
@@ -79,6 +79,7 @@ except Exception as e:
     # 如果数据库连接失败，打印错误但不阻止应用启动
     print(f"[DB Init Warning] 数据库初始化失败: {e}", flush=True)
     import traceback
+
     traceback.print_exc()
 
 
@@ -161,7 +162,7 @@ def _start_background_services():
     # A2A agents — 各自独立子进程，携带独立 uvicorn 事件循环
     a2a_agents = [
         ("service/ai/a2a/agents/outline_agent.py", "OutlineAgent :8001"),
-        ("service/ai/a2a/agents/doc_agent.py",     "DocAgent    :8002"),
+        ("service/ai/a2a/agents/doc_agent.py", "DocAgent    :8002"),
         ("service/ai/a2a/agents/summary_agent.py", "SummaryAgent:8003"),
     ]
     for rel_path, label in a2a_agents:
@@ -180,6 +181,7 @@ def _start_background_services():
     # DNS updater — 守护线程（内置文件锁，天然防多实例）
     try:
         from service.dns_updater import run_loop
+
         t = threading.Thread(target=run_loop, daemon=True, name="dns-updater")
         t.start()
         print("[BG] dns-updater started", flush=True)

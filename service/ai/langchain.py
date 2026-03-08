@@ -528,15 +528,40 @@ def _stock_handler(state: RouterState) -> dict:
 
 
 def _news_handler(state: RouterState) -> dict:
-    print("📰 获取最新新闻...")
+    """根据用户 query 选择信源：若问 AI/科技 则用科技 RSS 并用 LLM 筛选与问题相关的条目，否则用综合要闻。"""
+    query = (state.get("query") or "").strip().lower()
+    # 用户是否在问 AI/科技/互联网 等垂直领域新闻
+    _tech_keywords = ("ai", "人工智能", "科技", "互联网", "技术", "大模型", "机器学习", "深度学习", "chatgpt", "gpt", "算法", "智能")
+    want_tech = any(k in query for k in _tech_keywords)
     try:
         import feedparser
-        feed = feedparser.parse("https://rss.sina.com.cn/news/china/focus15.xml")
-        if feed.entries:
-            top3 = [f"• {e.title}" for e in feed.entries[:3]]
-            response = "📰 今日要闻：\n" + "\n".join(top3)
+        if want_tech:
+            # 科技/创投类 RSS，便于筛出与 query 相关的
+            feed = feedparser.parse("https://36kr.com/feed", request_headers={"User-Agent": "Mozilla/5.0"})
+            feed_label = "科技/AI"
         else:
+            feed = feedparser.parse("https://rss.sina.com.cn/news/china/focus15.xml")
+            feed_label = "今日要闻"
+        entries = getattr(feed, "entries", None) or []
+        if not entries:
             response = "📰 新闻获取失败（RSS 暂无条目）"
+        else:
+            candidates = [(getattr(e, "title", "") or "").strip() for e in entries[:15] if getattr(e, "title", None)]
+            if want_tech and candidates and query:
+                prompt = (
+                    f"用户问题：{state.get('query', '')}\n\n"
+                    "以下是一条条新闻标题，请只保留与用户问题**直接相关**的（如问 AI 就只保留 AI/人工智能/大模型等），按相关度排序，最多 5 条，每行一条，格式仅输出：\n• 标题1\n• 标题2\n不要解释、不要其他文字。"
+                    + "\n".join(candidates)
+                )
+                filtered = _call_llm(prompt, system="你只输出筛选后的新闻列表，每行以 • 开头，不要其他内容。")
+                if filtered and "•" in filtered:
+                    response = f"📰 {feed_label}（与您问题相关）：\n" + filtered.strip()
+                else:
+                    top5 = [f"• {t}" for t in candidates[:5]]
+                    response = f"📰 {feed_label}：\n" + "\n".join(top5)
+            else:
+                top5 = [f"• {t}" for t in candidates[:5]]
+                response = f"📰 {feed_label}：\n" + "\n".join(top5)
     except Exception as e:
         response = f"📰 新闻获取失败：{e}"
     return {"response": response}
