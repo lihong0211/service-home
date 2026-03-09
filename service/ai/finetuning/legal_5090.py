@@ -70,13 +70,24 @@ max_seq_length = 2048
 seed = 3407
 
 # ── Tokenizer ─────────────────────────────────────────────────────────────────
-# 部分 transformers 版本 AutoTokenizer 本地加载时有 '_config.model_type' AttributeError，
-# 直接用 Qwen2TokenizerFast 跳过 Auto 派发层。
-try:
-    from transformers import Qwen2TokenizerFast
-    tokenizer = Qwen2TokenizerFast.from_pretrained(BASE_MODEL_PATH)
-except Exception:
-    tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL_PATH, trust_remote_code=True)
+# 部分 transformers 版本本地加载时有 '_config.model_type' AttributeError bug，
+# 完全绕过 from_pretrained，直接从文件构建 tokenizer。
+from transformers import PreTrainedTokenizerFast
+
+_tok_file = os.path.join(BASE_MODEL_PATH, "tokenizer.json")
+_tok_cfg_file = os.path.join(BASE_MODEL_PATH, "tokenizer_config.json")
+tokenizer = PreTrainedTokenizerFast(tokenizer_file=_tok_file)
+
+with open(_tok_cfg_file, encoding="utf-8") as _f:
+    _tok_cfg = json.load(_f)
+for _attr in ("eos_token", "bos_token", "unk_token", "pad_token"):
+    _val = _tok_cfg.get(_attr)
+    if isinstance(_val, str) and _val:
+        setattr(tokenizer, _attr, _val)
+    elif isinstance(_val, dict):
+        setattr(tokenizer, _attr, _val.get("content", ""))
+if "chat_template" in _tok_cfg:
+    tokenizer.chat_template = _tok_cfg["chat_template"]
 if tokenizer.pad_token is None:
     tokenizer.pad_token = tokenizer.eos_token
 
