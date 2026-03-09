@@ -66,7 +66,7 @@ else:
     use_bf16 = False
 print(f"设备: {device}, 4bit: {use_4bit}, bf16: {use_bf16}")
 
-max_seq_length = 2048
+max_seq_length = 1024   # 法律问答平均 300-500 token，2048 大量填充浪费算力
 seed = 3407
 
 # ── Tokenizer ─────────────────────────────────────────────────────────────────
@@ -224,8 +224,8 @@ print(f"样本示例（前500字）:\n{texts[0][:500]}\n{'─'*60}")
 # ── 训练参数 ──────────────────────────────────────────────────────────────────
 sft_args = SFTConfig(
     output_dir=OUTPUT_DIR,
-    per_device_train_batch_size=4,
-    gradient_accumulation_steps=8,   # 等效 batch=32，与原 8×4 相同
+    per_device_train_batch_size=8,
+    gradient_accumulation_steps=4,   # 等效 batch=32
     num_train_epochs=2,
     learning_rate=1e-4,
     warmup_ratio=0.03,
