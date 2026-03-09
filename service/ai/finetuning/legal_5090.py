@@ -224,9 +224,9 @@ print(f"样本示例（前500字）:\n{texts[0][:500]}\n{'─'*60}")
 # ── 训练参数 ──────────────────────────────────────────────────────────────────
 sft_args = SFTConfig(
     output_dir=OUTPUT_DIR,
-    per_device_train_batch_size=1,   # unsloth packing 模式：batch=1 = 一条打包序列
-    gradient_accumulation_steps=32,  # 等效 batch=32，与之前 8×4 相同
-    num_train_epochs=1,              # 试跑；正式全量改为 2-3
+    per_device_train_batch_size=8,
+    gradient_accumulation_steps=4,
+    num_train_epochs=1,         # 试跑；正式全量改为 2-3
     learning_rate=1e-4,
     warmup_ratio=0.03,
     bf16=True,
@@ -240,7 +240,7 @@ sft_args = SFTConfig(
     save_strategy="no",
     dataset_text_field="text",
     max_length=max_seq_length,
-    packing=True,               # batch=1 时每条 packed 序列 ≤ max_seq_length，不再溢出
+    packing=False,
     dataset_num_proc=4,
 )
 
