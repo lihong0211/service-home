@@ -94,6 +94,12 @@ model, tokenizer = FastLanguageModel.from_pretrained(
 )
 print(f"设备: {next(model.parameters()).device}")
 
+# Qwen2 的 chat eos 是 <|im_end|>；unsloth 有时会把 eos_token 设成占位符 <EOS_TOKEN>，修正它
+if tokenizer.eos_token not in tokenizer.get_vocab():
+    tokenizer.eos_token = "<|im_end|>"
+    tokenizer.eos_token_id = tokenizer.convert_tokens_to_ids("<|im_end|>")
+print(f"eos_token: {tokenizer.eos_token!r} (id={tokenizer.eos_token_id})")
+
 # ── LoRA（通过 unsloth 接口）────────────────────────────────────────────────────
 model = FastLanguageModel.get_peft_model(
     model,
@@ -160,16 +166,14 @@ if MAX_TRAIN_SAMPLES is not None and MAX_TRAIN_SAMPLES < len(raw_data):
 print(f"总计: {len(raw_data):,} 条")
 
 # ── 格式化：Qwen chat template ─────────────────────────────────────────────────
-EOS_TOKEN = tokenizer.eos_token
-
-
 def format_sample(item):
     messages = [
         {"role": "system",    "content": SYSTEM_PROMPT},
         {"role": "user",      "content": item["question"]},
         {"role": "assistant", "content": item["answer"]},
     ]
-    return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False) + EOS_TOKEN
+    # apply_chat_template 已在 assistant 末尾添加 <|im_end|>，无需手动追加 eos
+    return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
 
 
 texts = [format_sample(item) for item in raw_data]
