@@ -95,6 +95,7 @@ def load_legal_data(
     answer_choice="first",
     include_kg_crime=True,
     kg_crime_max_answer_len=1200,
+    exclude_categories=("医疗纠纷",),
 ):
     """
     加载法律咨询数据，返回 HuggingFace Dataset，每条为 {"instruction", "input", "output"}。
@@ -107,11 +108,15 @@ def load_legal_data(
     :param answer_choice: "first" 用 answers[0]，"longest" 用 answers 中最长的一条（更易学到完整表述）
     :param include_kg_crime: 是否同时加载 kg_crime.json 罪名知识并合并到训练集
     :param kg_crime_max_answer_len: 罪名知识条目的回答最大长度
+    :param exclude_categories: 要排除的 category 列表/元组。默认 ("医疗纠纷",)，避免法律 LoRA 学到
+        医疗纠纷类回答中的「患者/治疗/康复」等话术导致回复偏题；传 None 表示不排除任何类别。
     """
     path = json_path or get_legal_qa_path()
     path = Path(path)
     if not path.is_file():
         raise FileNotFoundError(f"法律 QA 文件不存在: {path}")
+
+    exclude_set = set(exclude_categories) if exclude_categories else set()
 
     data = []
     with open(path, "r", encoding="utf-8", errors="replace") as f:
@@ -122,6 +127,9 @@ def load_legal_data(
             try:
                 item = json.loads(line)
             except json.JSONDecodeError:
+                continue
+            cat = (item.get("category") or "").strip()
+            if cat in exclude_set:
                 continue
             q = (item.get("question") or "").strip()
             answers = item.get("answers")
@@ -146,7 +154,8 @@ def load_legal_data(
             )
     if not data:
         raise ValueError("没有加载到任何法律 QA 数据")
-    print(f"加载法律 QA 共 {len(data)} 条")
+    excl_note = f"（已排除类别: {', '.join(sorted(exclude_set))}）" if exclude_set else ""
+    print(f"加载法律 QA 共 {len(data)} 条{excl_note}")
 
     if include_kg_crime:
         kg_data = load_legal_kg_crime_data(

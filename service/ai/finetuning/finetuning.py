@@ -13,7 +13,7 @@ from pathlib import Path
 # 懒加载：首次调用时再 import 大依赖
 _model_tokenizer_lock = threading.Lock()
 _model_tokenizer = {}  # lora_type -> (lora_model, tokenizer)
-_base_model_tokenizer = None  # (base_model, tokenizer)，用于对比输出
+_base_model_tokenizer = {}  # lora_type -> (base_model, tokenizer)，用于对比输出（legal 用 Base，其余用 Instruct）
 
 # 默认使用 1.5B + 医疗 LoRA 作为前端问答基础（轻量、响应快）
 _DEFAULT_MODEL_NAME = "Qwen2.5-1.5B-Instruct"
@@ -22,9 +22,11 @@ _DEFAULT_MODEL_NAME = "Qwen2.5-1.5B-Instruct"
 # 指定目录名时用 lora/{目录名}（如 medical、legal 无日期前缀）；None 时用 get_latest_lora_dir 取最新
 LORA_TYPE_DIRS = {
     "medical": "medical",  # lora/medical
-    "legal": "legal",  # lora/legal
+    "legal": "20260309_Qwen2.5-1.5B-legal-5090",  # 法律 LoRA，Base 基座训练
     "airpig": None,
 }
+# 法律 LoRA 在 Base（Qwen2.5-1.5B，无 -Instruct）上训练，推理时也用 Base
+LEGAL_BASE_MODEL_NAME = "Qwen2.5-1.5B"
 # 当 LORA_TYPE_DIRS[type] 为 None 时，用此 model_name 找最新 lora 目录（目录名后缀匹配）
 LORA_TYPE_MODEL_NAME = {
     "medical": "Qwen2.5-1.5B-Instruct-medical-5090",
@@ -49,9 +51,14 @@ def _get_paths(lora_type="medical"):
     project_root = get_project_root()
     file_path = Path(__file__).resolve()
     model_name = os.environ.get("FINETUNING_MODEL_NAME", _DEFAULT_MODEL_NAME)
-    base = os.environ.get("FINETUNING_BASE_MODEL") or str(
-        project_root / "models" / "Qwen" / model_name
-    )
+    if lora_type == "legal":
+        base = os.environ.get("FINETUNING_BASE_MODEL") or str(
+            project_root / "models" / "Qwen" / LEGAL_BASE_MODEL_NAME
+        )
+    else:
+        base = os.environ.get("FINETUNING_BASE_MODEL") or str(
+            project_root / "models" / "Qwen" / model_name
+        )
     lora_env = os.environ.get("FINETUNING_LORA_PATH")
     if lora_env:
         lora = lora_env
@@ -146,17 +153,17 @@ def get_model(lora_type="medical"):
         return _model_tokenizer[lora_type]
 
 
-def get_base_model():
-    """懒加载：仅加载 base 模型（无 LoRA），返回 (model, tokenizer)。用于与 LoRA 版对比输出。"""
+def get_base_model(lora_type="medical"):
+    """懒加载：仅加载 base 模型（无 LoRA），返回 (model, tokenizer)。用于与 LoRA 版对比输出。legal 用 Base 基座，其余用 Instruct。"""
     global _base_model_tokenizer
     with _model_tokenizer_lock:
-        if _base_model_tokenizer is not None:
-            return _base_model_tokenizer
+        if lora_type in _base_model_tokenizer:
+            return _base_model_tokenizer[lora_type]
 
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
-        base_path, lora_path = _get_paths()
+        base_path, lora_path = _get_paths(lora_type=lora_type)
         if not os.path.isdir(base_path):
             raise FileNotFoundError(f"Base 模型目录不存在: {base_path}")
 
@@ -180,8 +187,8 @@ def get_base_model():
         model = model.to(device)
         model.eval()
 
-        _base_model_tokenizer = (model, tokenizer)
-        return _base_model_tokenizer
+        _base_model_tokenizer[lora_type] = (model, tokenizer)
+        return _base_model_tokenizer[lora_type]
 
 
 def _run_one_model(model, tokenizer, prompt, gen_kw):
@@ -207,15 +214,17 @@ AIRPIG_SYSTEM_PROMPT = (
 )
 
 
-# 法律/医疗 LoRA 训练时用的 prompt，推理必须一致，否则答非所问
-LEGAL_PROMPT_TEMPLATE = """你是一个专业的法律咨询助手。请根据用户的问题提供专业、准确的法律建议。
+# 各 LoRA 的 system 提示词，推理时注入；与训练时保持一致
+# legal：用 chat template 训练（Instruct 基座），推理直接走 _messages_to_input，system 通过此注入
+LEGAL_SYSTEM_PROMPT = (
+    "你是一名专业法律顾问，专注于中国法律法规的咨询与解答。"
+    "请根据用户描述的问题，给出具体、准确、可操作的法律建议，"
+    "在适用时引用相关法律条文（如《民法典》《劳动合同法》等）并说明处理流程。"
+    "回答应聚焦于法律层面；若问题超出法律范畴（如医疗、心理等），"
+    "请明确告知并建议用户寻求对应专业人士帮助。"
+)
 
-### 问题：
-{}
-
-### 回答：
-"""
-
+# medical：仍用旧 ### 格式（Base Instruct 医疗 LoRA 训练格式未变）
 MEDICAL_PROMPT_TEMPLATE = """你是一个专业的医疗助手。请根据患者的问题提供专业、准确的回答。
 
 ### 问题：
@@ -224,43 +233,38 @@ MEDICAL_PROMPT_TEMPLATE = """你是一个专业的医疗助手。请根据患者
 ### 回答：
 """
 
-# 法律 LoRA 有时会漂移到医疗话术，检测到下列片段时截断，保留前半段法律相关回复
-LEGAL_DRIFT_PHRASES = (
-    "其实得了", "并不可怕", "战胜病魔", "对症治疗", "缓解病情", "患者要相信",
-    "外科疾病", "及时发现症状", "康复的几率",
-)
 
-
-def _truncate_legal_drift(text):
-    """若法律回复中出现典型医疗漂移用语，截断到该处之前（保留最后一个完整句）。"""
-    if not text or not isinstance(text, str):
-        return text
-    first = len(text)
-    for phrase in LEGAL_DRIFT_PHRASES:
-        i = text.find(phrase)
-        if i != -1 and i < first:
-            first = i
-    if first >= len(text):
-        return text
-    out = text[:first].rstrip()
-    # 尽量在句号处截断
-    last_period = out.rfind("。")
-    if last_period != -1:
-        out = out[: last_period + 1]
-    return out.strip() or text[:first].strip()
-
-
-def _prompt_for_sft_lora(lora_type, messages):
-    """legal/medical 推理时用与训练一致的 prompt 格式，避免与 apply_chat_template 不一致导致答非所问。"""
-    if lora_type not in ("legal", "medical"):
-        return None
-    # 取最后一条用户内容作为问题（或拼接所有 user 内容）
-    parts = [m.get("content", "") or "" for m in messages if (m.get("role") or "").strip().lower() == "user"]
-    question = " ".join(parts).strip() or (messages[-1].get("content") if messages else "") or ""
+def _prompt_for_sft_lora(lora_type, messages, tokenizer=None):
+    """
+    推理时构造与训练一致的输入。
+    - legal：Instruct 基座 + chat template 训练，用 apply_chat_template 注入 system prompt。
+    - medical：旧 ### 格式，返回拼好的字符串。
+    - 其他：返回 None，让调用方走 _messages_to_input。
+    """
     if lora_type == "legal":
-        return LEGAL_PROMPT_TEMPLATE.format(question)
+        # 注入 legal system prompt，强制用 chat template 保持与训练一致
+        has_system = messages and (messages[0].get("role") or "").lower() == "system"
+        if has_system:
+            clean = [{"role": "system", "content": LEGAL_SYSTEM_PROMPT}] + [
+                m for m in messages[1:] if (m.get("role") or "").lower() in ("user", "assistant")
+            ]
+        else:
+            clean = [{"role": "system", "content": LEGAL_SYSTEM_PROMPT}] + [
+                m for m in messages if (m.get("role") or "").lower() in ("user", "assistant")
+            ]
+        if tokenizer is not None:
+            return tokenizer.apply_chat_template(
+                clean, tokenize=False, add_generation_prompt=True
+            )
+        # tokenizer 未传入时退化为裸拼接（兜底）
+        parts = [m.get("content", "") for m in clean if m.get("role") == "user"]
+        return LEGAL_SYSTEM_PROMPT + "\n\n用户: " + " ".join(parts) + "\n助手: "
+
     if lora_type == "medical":
+        parts = [m.get("content", "") or "" for m in messages if (m.get("role") or "").strip().lower() == "user"]
+        question = " ".join(parts).strip() or (messages[-1].get("content") if messages else "") or ""
         return MEDICAL_PROMPT_TEMPLATE.format(question)
+
     return None
 
 
@@ -341,7 +345,7 @@ def chat(messages, stream=False, options=None, lora_type="medical"):
     if lora_type == "airpig":
         messages = _inject_airpig_system(messages)
     model, tokenizer = get_model(lora_type=lora_type)
-    prompt = _prompt_for_sft_lora(lora_type, messages)
+    prompt = _prompt_for_sft_lora(lora_type, messages, tokenizer=tokenizer)
     if prompt is None:
         prompt = _messages_to_input(messages, tokenizer)
     gen_kw = _gen_kwargs(options, tokenizer)
@@ -371,8 +375,6 @@ def chat(messages, stream=False, options=None, lora_type="medical"):
         t.join()
         return
     text = _run_one_model(model, tokenizer, prompt, gen_kw)
-    if lora_type == "legal":
-        text = _truncate_legal_drift(text)
     yield text
 
 
@@ -391,15 +393,13 @@ def chat_sync_compare(messages, options=None, lora_type="medical"):
     if lora_type == "airpig":
         messages = _inject_airpig_system(messages)
     lora_model, tokenizer = get_model(lora_type=lora_type)
-    base_model, _ = get_base_model()
-    prompt = _prompt_for_sft_lora(lora_type, messages)
+    base_model, _ = get_base_model(lora_type=lora_type)
+    prompt = _prompt_for_sft_lora(lora_type, messages, tokenizer=tokenizer)
     if prompt is None:
         prompt = _messages_to_input(messages, tokenizer)
     gen_kw = _gen_kwargs(options, tokenizer)
     base_text = _run_one_model(base_model, tokenizer, prompt, gen_kw)
     lora_text = _run_one_model(lora_model, tokenizer, prompt, gen_kw)
-    if lora_type == "legal":
-        lora_text = _truncate_legal_drift(lora_text)
     return {"base": base_text, "lora": lora_text}
 
 
@@ -419,7 +419,7 @@ def chat_stream_compare(messages, options=None, lora_type="medical"):
 
     if lora_type == "airpig":
         messages = _inject_airpig_system(messages)
-    base_model, tokenizer = get_base_model()
+    base_model, tokenizer = get_base_model(lora_type=lora_type)
     lora_model, _ = get_model(lora_type=lora_type)
     prompt = _prompt_for_sft_lora(lora_type, messages)
     if prompt is None:
