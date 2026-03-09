@@ -2,17 +2,19 @@
 # coding: utf-8
 """
 法律咨询 LoRA 微调 - Qwen2.5-1.5B-Instruct + DISC-Law-SFT（RTX 5090）。
+使用 Unsloth 加速：自动 Flash Attention + 融合内核，比原生 transformers 快 2-5x，显存减半。
 
-基座：Qwen2.5-1.5B-Instruct（指令对齐版，不用 Base）
+基座：Qwen2.5-1.5B-Instruct（指令对齐版）
 数据：
   - dataset/【数据集】legal_hq/DISC-Law-SFT/DISC-Law-SFT-Pair-QA-released.jsonl   (79,692条)
   - dataset/【数据集】legal_hq/DISC-Law-SFT/DISC-Law-SFT-Triplet-QA-released.jsonl (23,331条)
-格式：Qwen chat template（与 Instruct 训练格式一致），替换原来的 ### 问题/回答 裸格式
+格式：Qwen chat template（apply_chat_template）
 """
 
 import os
 import sys
 import json
+import random
 from pathlib import Path
 
 try:
@@ -24,8 +26,6 @@ if _bootstrap_root not in sys.path:
     sys.path.insert(0, _bootstrap_root)
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from trl import SFTTrainer, SFTConfig
 from datasets import Dataset
 
@@ -41,7 +41,6 @@ _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(_SCRIPT_DIR)))
 
 BASE_MODEL_PATH = os.path.join(_PROJECT_ROOT, "models", "Qwen", "Qwen2.5-1.5B-Instruct")
-_LOCAL_MODEL = os.path.isdir(BASE_MODEL_PATH)
 
 LEGAL_RUN_NAME = "Qwen2.5-1.5B-Instruct-legal-disc-5090"
 _RUN_PARENT = get_run_parent_dir(get_finetuning_root(), model_name=LEGAL_RUN_NAME)
@@ -51,99 +50,35 @@ OUTPUT_DIR = str(get_outputs_hf_dir(_RUN_PARENT))
 print(f"基座: {BASE_MODEL_PATH}")
 print(f"LoRA 保存: {LORA_SAVE_DIR}")
 
-# ── 设备 ──────────────────────────────────────────────────────────────────────
-if torch.cuda.is_available():
-    device = "cuda"
-    use_4bit = os.environ.get("USE_4BIT", "").strip() in ("1", "true", "yes")
-    use_bf16 = torch.cuda.is_bf16_supported() and not use_4bit
-else:
-    device = (
-        "mps"
-        if (getattr(torch.backends, "mps", None) and torch.backends.mps.is_available())
-        else "cpu"
-    )
-    use_4bit = False
-    use_bf16 = False
-print(f"设备: {device}, 4bit: {use_4bit}, bf16: {use_bf16}")
-
-max_seq_length = 1024   # 法律问答平均 300-500 token，2048 大量填充浪费算力
+max_seq_length = 2048   # unsloth + packing 下高效利用，不再有填充浪费
 seed = 3407
 
-# ── Tokenizer ─────────────────────────────────────────────────────────────────
-# 部分 transformers 版本本地加载时有 '_config.model_type' AttributeError bug，
-# 完全绕过 from_pretrained，直接从文件构建 tokenizer。
-from transformers import PreTrainedTokenizerFast
+# ── Unsloth：模型 + Tokenizer ──────────────────────────────────────────────────
+from unsloth import FastLanguageModel
 
-_tok_file = os.path.join(BASE_MODEL_PATH, "tokenizer.json")
-_tok_cfg_file = os.path.join(BASE_MODEL_PATH, "tokenizer_config.json")
-tokenizer = PreTrainedTokenizerFast(tokenizer_file=_tok_file)
+model, tokenizer = FastLanguageModel.from_pretrained(
+    model_name=BASE_MODEL_PATH,
+    max_seq_length=max_seq_length,
+    dtype=None,          # 自动检测：5090 走 bf16
+    load_in_4bit=False,  # 32GB 显存无需量化
+)
+print(f"设备: {next(model.parameters()).device}")
 
-with open(_tok_cfg_file, encoding="utf-8") as _f:
-    _tok_cfg = json.load(_f)
-for _attr in ("eos_token", "bos_token", "unk_token", "pad_token"):
-    _val = _tok_cfg.get(_attr)
-    if isinstance(_val, str) and _val:
-        setattr(tokenizer, _attr, _val)
-    elif isinstance(_val, dict):
-        setattr(tokenizer, _attr, _val.get("content", ""))
-if "chat_template" in _tok_cfg:
-    tokenizer.chat_template = _tok_cfg["chat_template"]
-if tokenizer.pad_token is None:
-    tokenizer.pad_token = tokenizer.eos_token
-
-# ── 模型 ──────────────────────────────────────────────────────────────────────
-if use_4bit:
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_compute_dtype=(
-            torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-        ),
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_use_double_quant=True,
-    )
-    model = AutoModelForCausalLM.from_pretrained(
-        BASE_MODEL_PATH,
-        quantization_config=bnb_config,
-        device_map="auto",
-        trust_remote_code=True,
-    )
-    model = prepare_model_for_kbit_training(model)
-else:
-    _dtype = torch.bfloat16 if (device == "cuda" and use_bf16) else torch.float16
-    model = AutoModelForCausalLM.from_pretrained(
-        BASE_MODEL_PATH,
-        torch_dtype=_dtype,
-        device_map="auto" if device == "cuda" else None,
-        trust_remote_code=True,
-    )
-    if device != "cuda":
-        model = model.to(device)
-
-# ── LoRA ──────────────────────────────────────────────────────────────────────
-lora_config = LoraConfig(
+# ── LoRA（通过 unsloth 接口）────────────────────────────────────────────────────
+model = FastLanguageModel.get_peft_model(
+    model,
     r=16,
-    lora_alpha=32,  # alpha=2r，对 Instruct 模型收敛更稳
-    target_modules=[
-        "q_proj",
-        "k_proj",
-        "v_proj",
-        "o_proj",
-        "gate_proj",
-        "up_proj",
-        "down_proj",
-    ],
+    lora_alpha=32,
+    target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
     lora_dropout=0.05,
     bias="none",
-    task_type="CAUSAL_LM",
+    use_gradient_checkpointing="unsloth",   # unsloth 优化版，比标准 GC 更省显存
+    random_state=seed,
+    use_rslora=False,
 )
-model = get_peft_model(model, lora_config)
-model.config.use_cache = False
-if hasattr(model, "enable_input_require_grads"):
-    model.enable_input_require_grads()
 model.print_trainable_parameters()
 
 # ── System Prompt ──────────────────────────────────────────────────────────────
-# 具体、有约束力：明确职责范围、要求引用法条、禁止越界给非法律建议
 SYSTEM_PROMPT = (
     "你是一名专业法律顾问，专注于中国法律法规的咨询与解答。"
     "请根据用户描述的问题，给出具体、准确、可操作的法律建议，"
@@ -154,16 +89,11 @@ SYSTEM_PROMPT = (
 
 # ── 数据加载 ──────────────────────────────────────────────────────────────────
 _DATA_DIR = Path(_PROJECT_ROOT) / "dataset" / "【数据集】legal_hq" / "DISC-Law-SFT"
-_PAIR_QA = _DATA_DIR / "DISC-Law-SFT-Pair-QA-released.jsonl"
+_PAIR_QA   = _DATA_DIR / "DISC-Law-SFT-Pair-QA-released.jsonl"
 _TRIPLET_QA = _DATA_DIR / "DISC-Law-SFT-Triplet-QA-released.jsonl"
 
 
 def load_disc_law_sft(max_input_len=800, max_output_len=1000):
-    """
-    加载 DISC-Law-SFT 的 Pair-QA 和 Triplet-QA 两份数据。
-    Triplet-QA 的 input 已经包含了法律条文参考，直接使用 input/output 两个字段即可。
-    过滤：输入或输出过短（<15字）、输入过长的条目。
-    """
     records = []
     for path, label in [(_PAIR_QA, "Pair-QA"), (_TRIPLET_QA, "Triplet-QA")]:
         if not path.is_file():
@@ -191,9 +121,7 @@ def load_disc_law_sft(max_input_len=800, max_output_len=1000):
     return records
 
 
-MAX_TRAIN_SAMPLES = 10000  # 试跑；正式训练设为 None 用全量数据
-
-import random
+MAX_TRAIN_SAMPLES = 10000   # 试跑；正式全量训练设为 None
 
 raw_data = load_disc_law_sft(max_input_len=800, max_output_len=1000)
 if MAX_TRAIN_SAMPLES is not None and MAX_TRAIN_SAMPLES < len(raw_data):
@@ -201,19 +129,17 @@ if MAX_TRAIN_SAMPLES is not None and MAX_TRAIN_SAMPLES < len(raw_data):
     raw_data = random.sample(raw_data, MAX_TRAIN_SAMPLES)
 print(f"总计: {len(raw_data):,} 条")
 
-
 # ── 格式化：Qwen chat template ─────────────────────────────────────────────────
-# Instruct 模型用 apply_chat_template 格式化，与预训练格式完全一致，效果远优于裸 ### 格式
+EOS_TOKEN = tokenizer.eos_token
+
+
 def format_sample(item):
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": item["question"]},
+        {"role": "system",    "content": SYSTEM_PROMPT},
+        {"role": "user",      "content": item["question"]},
         {"role": "assistant", "content": item["answer"]},
     ]
-    # add_generation_prompt=False：训练时 assistant 的回答要包含在 text 里
-    return tokenizer.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=False
-    )
+    return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False) + EOS_TOKEN
 
 
 texts = [format_sample(item) for item in raw_data]
@@ -225,23 +151,22 @@ print(f"样本示例（前500字）:\n{texts[0][:500]}\n{'─'*60}")
 sft_args = SFTConfig(
     output_dir=OUTPUT_DIR,
     per_device_train_batch_size=8,
-    gradient_accumulation_steps=4,   # 等效 batch=32
-    num_train_epochs=1,   # 试跑；正式全量训练改为 2-3
+    gradient_accumulation_steps=4,
+    num_train_epochs=1,         # 试跑；正式全量改为 2-3
     learning_rate=1e-4,
     warmup_ratio=0.03,
-    bf16=(device == "cuda" and use_bf16),
-    fp16=(device == "cuda" and not use_bf16),
+    bf16=True,
+    fp16=False,
     logging_steps=10,
-    optim="adamw_8bit" if use_4bit else "adamw_torch",
+    optim="adamw_8bit",         # unsloth 推荐
     weight_decay=0.01,
     lr_scheduler_type="cosine",
     seed=seed,
     report_to="none",
     save_strategy="no",
-    gradient_checkpointing=(device == "cuda"),
     dataset_text_field="text",
     max_length=max_seq_length,
-    packing=False,                   # 无 flash_attention_2 时关闭，否则 OOM
+    packing=True,               # unsloth 内置 flash attention，packing 安全高效
     dataset_num_proc=4,
 )
 
@@ -253,7 +178,7 @@ trainer = SFTTrainer(
 )
 
 # ── 训练 ──────────────────────────────────────────────────────────────────────
-print("开始训练法律 LoRA (DISC-Law-SFT + Instruct 基座)...")
+print("开始训练法律 LoRA (Unsloth + DISC-Law-SFT)...")
 trainer.train()
 model.save_pretrained(LORA_SAVE_DIR)
 tokenizer.save_pretrained(LORA_SAVE_DIR)
@@ -264,16 +189,13 @@ print(f"LoRA 已保存到: {LORA_SAVE_DIR}")
 def generate_legal_response(question, model=None, tokenizer=None):
     m = model or trainer.model
     tok = tokenizer or getattr(trainer, "processing_class", None)
-    m.eval()
+    FastLanguageModel.for_inference(m)
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": question},
+        {"role": "user",   "content": question},
     ]
-    prompt = tok.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True
-    )
+    prompt = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     enc = tok(prompt, return_tensors="pt").to(m.device)
-    enc = {k: v for k, v in enc.items() if k != "token_type_ids"}
     with torch.no_grad():
         out = m.generate(
             **enc,
@@ -282,10 +204,8 @@ def generate_legal_response(question, model=None, tokenizer=None):
             top_p=0.9,
             repetition_penalty=1.1,
             do_sample=True,
-            pad_token_id=tok.pad_token_id or tok.eos_token_id,
-            eos_token_id=tok.eos_token_id,
         )
-    gen = out[0][enc["input_ids"].shape[1] :]
+    gen = out[0][enc["input_ids"].shape[1]:]
     return tok.decode(gen, skip_special_tokens=True).strip()
 
 
