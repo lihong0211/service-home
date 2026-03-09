@@ -94,9 +94,9 @@ model, tokenizer = FastLanguageModel.from_pretrained(
 )
 print(f"设备: {next(model.parameters()).device}")
 
-# unsloth 加载 Qwen2 时 eos_token 会被设成占位符 <EOS_TOKEN>（该 token 虽在词表但不正确）
-# Qwen2-Instruct chat 格式的真正 eos 是 <|im_end|>，强制覆盖
-tokenizer.eos_token = "<|im_end|>"
+# unsloth 加载 Qwen2 时会把 eos_token 设成占位符 <EOS_TOKEN>。
+# 直接赋属性对 Fast Tokenizer 后端不够，必须用 add_special_tokens 才能真正覆盖。
+tokenizer.add_special_tokens({"eos_token": "<|im_end|>"})
 tokenizer.eos_token_id = tokenizer.convert_tokens_to_ids("<|im_end|>")
 print(f"eos_token: {tokenizer.eos_token!r} (id={tokenizer.eos_token_id})")
 
