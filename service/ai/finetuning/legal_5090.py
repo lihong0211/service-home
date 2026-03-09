@@ -29,10 +29,11 @@ import torch
 from trl import SFTTrainer, SFTConfig
 from datasets import Dataset
 
-# Unsloth 在无外网环境下会因 get_statistics 上报失败而崩溃，提前 patch 掉
-os.environ.setdefault("HF_HUB_OFFLINE", "0")   # 不影响模型加载
+# Unsloth 在无外网时会调用 snapshot_download 上报统计而崩溃。
+# llama.py 直接绑定了 get_statistics 函数引用，patch 模块属性无效；
+# 改为 patch _utils 里的 snapshot_download，stats_check 通过模块引用调用它，可拦截。
 import unsloth.models._utils as _unsloth_utils
-_unsloth_utils.get_statistics = lambda *a, **kw: None
+_unsloth_utils.snapshot_download = lambda *a, **kw: None
 
 from service.ai.finetuning.paths import (
     get_finetuning_root,
@@ -64,8 +65,9 @@ from unsloth import FastLanguageModel
 model, tokenizer = FastLanguageModel.from_pretrained(
     model_name=BASE_MODEL_PATH,
     max_seq_length=max_seq_length,
-    dtype=None,          # 自动检测：5090 走 bf16
-    load_in_4bit=False,  # 32GB 显存无需量化
+    dtype=None,             # 自动检测：5090 走 bf16
+    load_in_4bit=False,     # 32GB 显存无需量化
+    local_files_only=True,  # 无外网，禁止联网校验
 )
 print(f"设备: {next(model.parameters()).device}")
 
