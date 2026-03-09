@@ -226,7 +226,7 @@ sft_args = SFTConfig(
     output_dir=OUTPUT_DIR,
     per_device_train_batch_size=8,
     gradient_accumulation_steps=4,   # 等效 batch=32
-    num_train_epochs=2,
+    num_train_epochs=1,   # 试跑；正式全量训练改为 2-3
     learning_rate=1e-4,
     warmup_ratio=0.03,
     bf16=(device == "cuda" and use_bf16),
