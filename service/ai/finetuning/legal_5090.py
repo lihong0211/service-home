@@ -25,6 +25,7 @@ _bootstrap_root = os.path.dirname(os.path.dirname(os.path.dirname(_bootstrap_dir
 if _bootstrap_root not in sys.path:
     sys.path.insert(0, _bootstrap_root)
 
+
 # ── 修复 transformers tokenizer bug（在任何 import 之前执行）─────────────────────
 # 部分版本的 transformers tokenization_utils_base.py 里有：
 #   if _is_local and _config.model_type not in [...]
@@ -32,6 +33,7 @@ if _bootstrap_root not in sys.path:
 def _fix_tokenizer_dict_bug():
     try:
         import importlib.util
+
         spec = importlib.util.find_spec("transformers.tokenization_utils_base")
         if not spec or not spec.origin:
             return
@@ -48,6 +50,7 @@ def _fix_tokenizer_dict_bug():
     except Exception as e:
         print(f"[startup] tokenizer patch 失败: {e}")
 
+
 _fix_tokenizer_dict_bug()
 
 
@@ -55,6 +58,7 @@ def _fix_sft_trainer_eos_check():
     """把 SFTTrainer 里 eos_token 词表校验的 raise 降级为 pass（Qwen2+unsloth 兼容）。"""
     try:
         import importlib.util
+
         spec = importlib.util.find_spec("trl.trainer.sft_trainer")
         if not spec or not spec.origin:
             return
@@ -87,6 +91,7 @@ def _fix_sft_trainer_eos_check():
     except Exception as e:
         print(f"[startup] SFTTrainer patch 失败: {e}")
 
+
 _fix_sft_trainer_eos_check()
 
 import torch
@@ -94,6 +99,7 @@ from datasets import Dataset
 
 # Unsloth 在无外网时上报统计会崩溃，patch 掉 snapshot_download 拦截网络调用
 import unsloth.models._utils as _unsloth_utils
+
 _unsloth_utils.snapshot_download = lambda *a, **kw: None
 
 # trl 必须在 unsloth 完成 patch 之后 import，否则拿到的是未被 patch 的原始版本
@@ -121,15 +127,15 @@ OUTPUT_DIR = str(get_outputs_hf_dir(_RUN_PARENT))
 print(f"基座: {BASE_MODEL_PATH}")
 print(f"LoRA 保存: {LORA_SAVE_DIR}")
 
-max_seq_length = 1024   # 法律问答平均 400-600 token，1024 足够，降低 attention 计算量
+max_seq_length = 1024  # 法律问答平均 400-600 token，1024 足够，降低 attention 计算量
 seed = 3407
 
 # ── Unsloth：模型 + Tokenizer ──────────────────────────────────────────────────
 model, tokenizer = FastLanguageModel.from_pretrained(
     model_name=BASE_MODEL_PATH,
     max_seq_length=max_seq_length,
-    dtype=None,             # 自动检测：5090 走 bf16
-    load_in_4bit=False,     # 32GB 显存无需量化
+    dtype=None,  # 自动检测：5090 走 bf16
+    load_in_4bit=False,  # 32GB 显存无需量化
     local_files_only=True,  # 无外网，禁止联网校验
 )
 print(f"设备: {next(model.parameters()).device}")
@@ -145,10 +151,18 @@ model = FastLanguageModel.get_peft_model(
     model,
     r=16,
     lora_alpha=32,
-    target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+    target_modules=[
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj",
+    ],
     lora_dropout=0.05,
     bias="none",
-    use_gradient_checkpointing="unsloth",   # unsloth 优化版，比标准 GC 更省显存
+    use_gradient_checkpointing="unsloth",  # unsloth 优化版，比标准 GC 更省显存
     random_state=seed,
     use_rslora=False,
 )
@@ -165,7 +179,7 @@ SYSTEM_PROMPT = (
 
 # ── 数据加载 ──────────────────────────────────────────────────────────────────
 _DATA_DIR = Path(_PROJECT_ROOT) / "dataset" / "【数据集】legal_hq" / "DISC-Law-SFT"
-_PAIR_QA   = _DATA_DIR / "DISC-Law-SFT-Pair-QA-released.jsonl"
+_PAIR_QA = _DATA_DIR / "DISC-Law-SFT-Pair-QA-released.jsonl"
 _TRIPLET_QA = _DATA_DIR / "DISC-Law-SFT-Triplet-QA-released.jsonl"
 
 
@@ -197,7 +211,7 @@ def load_disc_law_sft(max_input_len=800, max_output_len=1000):
     return records
 
 
-MAX_TRAIN_SAMPLES = 10000   # 试跑；正式全量训练设为 None
+MAX_TRAIN_SAMPLES = 10000  # 试跑；正式全量训练设为 None
 
 raw_data = load_disc_law_sft(max_input_len=800, max_output_len=1000)
 if MAX_TRAIN_SAMPLES is not None and MAX_TRAIN_SAMPLES < len(raw_data):
@@ -205,15 +219,18 @@ if MAX_TRAIN_SAMPLES is not None and MAX_TRAIN_SAMPLES < len(raw_data):
     raw_data = random.sample(raw_data, MAX_TRAIN_SAMPLES)
 print(f"总计: {len(raw_data):,} 条")
 
+
 # ── 格式化：Qwen chat template ─────────────────────────────────────────────────
 def format_sample(item):
     messages = [
-        {"role": "system",    "content": SYSTEM_PROMPT},
-        {"role": "user",      "content": item["question"]},
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": item["question"]},
         {"role": "assistant", "content": item["answer"]},
     ]
     # apply_chat_template 已在 assistant 末尾添加 <|im_end|>，无需手动追加 eos
-    return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+    return tokenizer.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=False
+    )
 
 
 texts = [format_sample(item) for item in raw_data]
@@ -226,13 +243,13 @@ sft_args = SFTConfig(
     output_dir=OUTPUT_DIR,
     per_device_train_batch_size=8,
     gradient_accumulation_steps=4,
-    num_train_epochs=1,         # 试跑；正式全量改为 2-3
+    num_train_epochs=1,  # 试跑；正式全量改为 2-3
     learning_rate=1e-4,
     warmup_ratio=0.03,
     bf16=True,
     fp16=False,
     logging_steps=10,
-    optim="adamw_8bit",         # unsloth 推荐
+    optim="adamw_8bit",  # unsloth 推荐
     weight_decay=0.01,
     lr_scheduler_type="cosine",
     seed=seed,
@@ -266,9 +283,11 @@ def generate_legal_response(question, model=None, tokenizer=None):
     FastLanguageModel.for_inference(m)
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user",   "content": question},
+        {"role": "user", "content": question},
     ]
-    prompt = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    prompt = tok.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True
+    )
     enc = tok(prompt, return_tensors="pt").to(m.device)
     with torch.no_grad():
         out = m.generate(
@@ -279,7 +298,7 @@ def generate_legal_response(question, model=None, tokenizer=None):
             repetition_penalty=1.1,
             do_sample=True,
         )
-    gen = out[0][enc["input_ids"].shape[1]:]
+    gen = out[0][enc["input_ids"].shape[1] :]
     return tok.decode(gen, skip_special_tokens=True).strip()
 
 
