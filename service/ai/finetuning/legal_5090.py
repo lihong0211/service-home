@@ -70,15 +70,13 @@ max_seq_length = 2048
 seed = 3407
 
 # ── Tokenizer ─────────────────────────────────────────────────────────────────
-# local_files_only 在部分 transformers 版本下会导致 config 以 dict 返回（无 .model_type），
-# 改为先显式加载 AutoConfig 再传入，绕过该 bug。
-from transformers import AutoConfig
-_tok_config = AutoConfig.from_pretrained(BASE_MODEL_PATH, trust_remote_code=True)
-tokenizer = AutoTokenizer.from_pretrained(
-    BASE_MODEL_PATH,
-    config=_tok_config,
-    trust_remote_code=True,
-)
+# 部分 transformers 版本 AutoTokenizer 本地加载时有 '_config.model_type' AttributeError，
+# 直接用 Qwen2TokenizerFast 跳过 Auto 派发层。
+try:
+    from transformers import Qwen2TokenizerFast
+    tokenizer = Qwen2TokenizerFast.from_pretrained(BASE_MODEL_PATH)
+except Exception:
+    tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL_PATH, trust_remote_code=True)
 if tokenizer.pad_token is None:
     tokenizer.pad_token = tokenizer.eos_token
 
