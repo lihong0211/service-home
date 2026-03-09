@@ -1,7 +1,7 @@
-# 前端对接文档（Agent / LangGraph 状态与步骤）
+# 前端对接说明（Agent / LangGraph）
 
-> 面向前端开发：Agent 智能体、LangGraph 图执行的接口约定、请求/响应格式、SSE 流式协议。  
-> 对应后端：`routes/ai.py`、`service/ai/agent/agent.py`、`service/ai/langchain.py`
+> 面向前端开发：智能体执行、LangGraph 图执行的接口约定、请求/响应格式、SSE 流式协议及使用示例。  
+> 后端入口：`routes/ai.py`；实现：`service/ai/agent/agent.py`、`service/ai/langchain.py`
 
 ---
 
@@ -9,25 +9,23 @@
 
 ### 1.1 响应结构
 
-- 成功：`{ "code": 0, "msg": "ok", "data": { ... } }`
-- 业务错误（如参数错误、未找到）：`{ "code": 400, "msg": "错误说明", "data": { ... } }`，HTTP 400
-- 服务器错误：`{ "code": 500, "msg": "..." }`，HTTP 500
-- 未找到资源：HTTP 404，body 中 `code: 404`
+| 场景       | HTTP | 响应体 |
+|------------|------|--------|
+| 成功       | 200  | `{ "code": 0, "msg": "ok", "data": { ... } }` |
+| 业务错误   | 400  | `{ "code": 400, "msg": "错误说明", "data": { ... } }` |
+| 未找到资源 | 404  | body 中 `code: 404` |
+| 服务器错误 | 500  | `{ "code": 500, "msg": "..." }` |
 
-### 1.2 请求头
+### 1.2 请求头与 Base URL
 
-- `Content-Type: application/json`（POST 且传 JSON 时）
-- 跨域：服务端在非 production 下会返回 `Access-Control-Allow-Origin: *`，生产环境由 Nginx 等配置
-
-### 1.3 Base URL
-
-- 文档中接口路径为相对路径，前端需拼接实际域名（如 `https://your-api.com` 或同源省略）。
+- POST 且传 JSON 时：`Content-Type: application/json`
+- 文档中的路径为相对路径，前端需拼接实际 Base URL（如 `https://your-api.com` 或同源省略）
 
 ---
 
 ## 二、Agent 智能体接口
 
-用于「智能投研助手」「迪士尼客服助手」「财富管理投顾」等 3D 流程可视化：先拿到图结构，再执行并按步骤驱动动画，最后展示最终状态（含 `response`）。
+用于「智能投研助手」「迪士尼客服助手」「财富管理投顾」等场景，支持 3D 流程可视化：先取图结构，再执行并按步骤驱动动画，最后展示最终状态（含 `response`）。
 
 ### 2.1 获取智能体列表
 
@@ -67,22 +65,22 @@ GET /ai/agent/list
 }
 ```
 
-- `data` 的 key 为 `agent_id`，用于后续 schema、run 请求。
-- `type`：`deliberative` | `reactive` | `hybrid`，可用于前端展示或筛选。
+- `data` 的 key 即 `agent_id`，用于后续 schema、run。
+- `type`：`deliberative` | `reactive` | `hybrid`，可用于展示或筛选。
 
 ---
 
-### 2.2 获取智能体图结构（3D 可视化用）
+### 2.2 获取智能体图结构（3D 可视化）
 
 ```http
 GET /ai/agent/schema?agent_id=fund_qa_agent
 ```
 
-| 参数        | 类型   | 说明                    |
-|-------------|--------|-------------------------|
-| `agent_id`  | string | 必填，如 `fund_qa_agent` |
+| 参数       | 类型   | 说明                     |
+|------------|--------|--------------------------|
+| `agent_id` | string | 必填，如 `fund_qa_agent` |
 
-**响应示例**
+**响应示例（迪士尼客服）**
 
 ```json
 {
@@ -91,20 +89,22 @@ GET /ai/agent/schema?agent_id=fund_qa_agent
   "data": {
     "nodes": [
       { "id": "input", "name": "用户输入", "type": "input", "icon": "📝", "description": "接收用户查询" },
-      { "id": "agent", "name": "迪士尼客服助手", "type": "process", "icon": "🏰", "description": "..." },
-      { "id": "output", "name": "输出", "type": "output", "icon": "📢", "description": "返回结果" }
+      { "id": "retrieval", "name": "知识库检索", "type": "process", "icon": "🔍", "description": "向量检索迪士尼知识库" },
+      { "id": "generation", "name": "生成回答", "type": "process", "icon": "🏰", "description": "基于检索结果生成答案" },
+      { "id": "output", "name": "输出", "type": "output", "icon": "📢", "description": "返回最终答案" }
     ],
     "edges": [
-      { "source": "input", "target": "agent", "type": "normal" },
-      { "source": "agent", "target": "output", "type": "normal" }
+      { "source": "input", "target": "retrieval", "type": "normal" },
+      { "source": "retrieval", "target": "generation", "type": "normal" },
+      { "source": "generation", "target": "output", "type": "normal" }
     ],
     "executionOrder": []
   }
 }
 ```
 
-- `executionOrder` 在 GET 时为空，真实执行顺序由 **POST run** 的 `data.executionOrder` / `data.steps` 提供。
-- 前端可用 `nodes` + `edges` 绘制 3D 图，用 `executionOrder` 或 `steps[].nodeId` 高亮当前/已执行节点。
+- GET 时 `executionOrder` 为空；真实执行顺序由 **POST /ai/agent/run** 的 `data.executionOrder` / `data.steps` 提供。
+- 前端可用 `nodes` + `edges` 画图，用 `steps[].nodeId` 或 `executionOrder` 高亮当前/已执行节点。
 
 ---
 
@@ -117,22 +117,19 @@ Content-Type: application/json
 
 **请求体**
 
-| 字段         | 类型   | 必填 | 说明 |
-|--------------|--------|------|------|
-| `agent_id`   | string | 否   | 默认 `research_agent` |
-| `input`      | object | 否   | 与具体 Agent 对应，见下表 |
-| `stream`     | boolean| 否   | 默认 `false`；为 `true` 时走 SSE，见 2.4 |
+| 字段       | 类型    | 必填 | 说明 |
+|------------|---------|------|------|
+| `agent_id` | string  | 否   | 默认 `research_agent` |
+| `input`    | object  | 否   | 与具体 Agent 对应，见下表 |
+| `stream`   | boolean | 否   | 默认 `false`；为 `true` 时走 SSE，见 2.4 |
 
-**各 Agent 推荐 `input` 示例**
+**各 Agent 推荐 `input`**
 
-- **fund_qa_agent（迪士尼）**  
-  `{ "messages": [ { "role": "user", "content": "上海迪士尼乐园的开放时间是多少？" } ] }`
-
-- **research_agent**  
-  `{ "research_topic": "新能源汽车行业投资机会", "industry_focus": "电动汽车制造", "time_horizon": "中期", ... }`
-
-- **wealth_advisor_agent**  
-  `{ "user_query": "根据当前市场情况，我应该如何调整投资组合？", ... }`
+| agent_id            | 推荐 input |
+|---------------------|------------|
+| fund_qa_agent       | `{ "messages": [ { "role": "user", "content": "上海迪士尼乐园的开放时间是多少？" } ] }` |
+| research_agent      | `{ "research_topic": "新能源汽车行业投资机会", "industry_focus": "电动汽车制造", "time_horizon": "中期", ... }` |
+| wealth_advisor_agent| `{ "user_query": "根据当前市场情况，我应该如何调整投资组合？", ... }` |
 
 **响应示例（非流式）**
 
@@ -151,73 +148,78 @@ Content-Type: application/json
     "graphData": {
       "nodes": [ ... ],
       "edges": [ ... ],
-      "executionOrder": [ "agent", "tools", "agent" ]
+      "executionOrder": [ "retrieval", "generation" ]
     },
     "steps": [
       {
         "stepIndex": 0,
-        "nodeId": "agent",
+        "nodeId": "retrieval",
         "status": "end",
         "duration_ms": 120,
-        "output": { ... },
-        "label": "推理"
+        "output": { "query": "...", "hits": 5, "sources": [ ... ] },
+        "label": "知识库检索"
       },
       {
         "stepIndex": 1,
-        "nodeId": "tools",
+        "nodeId": "generation",
         "status": "end",
         "duration_ms": 800,
-        "output": { ... },
-        "label": "知识库检索"
+        "output": { "query": "...", "response": "...", "sources": [ ... ], "messages": [ ... ] },
+        "label": "生成回答"
       }
     ],
     "finalState": {
-      "messages": [ ... ],
-      "response": "上海迪士尼乐园的开放时间为..."
+      "query": "上海迪士尼乐园的开放时间是多少？",
+      "response": "上海迪士尼乐园的开放时间为...",
+      "sources": [ { "doc_id": "...", "text": "...", "category": "...", "distance": ... } ],
+      "messages": [
+        { "role": "user", "content": "上海迪士尼乐园的开放时间是多少？" },
+        { "role": "assistant", "content": "上海迪士尼乐园的开放时间为..." }
+      ]
     },
-    "executionOrder": [ "agent", "tools", "agent" ],
-    "totalSteps": 3
+    "executionOrder": [ "retrieval", "generation" ],
+    "totalSteps": 2
   }
 }
 ```
 
 **前端使用建议**
 
-- **状态**：用 `data.finalState` 展示最终状态；迪士尼等用 `data.finalState.response` 作为最终回答文案。
-- **步骤**：用 `data.steps` 按 `stepIndex` 顺序驱动 3D 步骤动画；`data.steps[].label` 可作步骤说明（如「推理」「知识库检索」）。
-- **进度**：`data.totalSteps` 为总步数，当前步为 `stepIndex + 1`，进度 = `(stepIndex + 1) / totalSteps * 100%`。
+- **最终回答**：用 `data.finalState.response` 展示；迪士尼等还可展示 `data.finalState.sources` 作为引用。
+- **步骤动画**：用 `data.steps` 按 `stepIndex` 顺序驱动；`data.steps[].label` 作步骤说明。
+- **进度**：总步数 `data.totalSteps`，当前步序号为 `stepIndex + 1`，进度 = `(stepIndex + 1) / totalSteps * 100%`。
 
 ---
 
 ### 2.4 执行智能体（流式 SSE）
 
-请求同上，但 `stream: true`。响应为 **SSE（text/event-stream）**，不再返回 JSON body。
+请求同上，**`stream: true`**。响应为 **SSE（text/event-stream）**，不再返回 JSON body。
 
 **SSE 事件顺序**
 
 1. **init**（一条）  
-   - 携带初始 `graphData`、`agentMeta`，用于先画图再收步骤。
+   - 含 `graphData`、`agentMeta`，用于先画图再收步骤。
 
 2. **step**（多条）  
-   - 每执行完一个节点一条，携带当前步信息，与上面 `steps[]` 中单条结构一致。
+   - 每执行完一个节点一条，结构与上面单条 `steps[]` 一致（含 `stepIndex`、`nodeId`、`status`、`duration_ms`、`output`、`label` 等）。
 
 3. **done**（一条）  
-   - 携带 `finalState`、`steps`、`executionOrder`、`totalSteps`、`graphData`、`agentMeta`。
+   - 含 `finalState`、`steps`、`executionOrder`、`totalSteps`、`graphData`、`agentMeta`。
 
 4. **error**（出错时）  
-   - 携带 `error` 文案。
+   - 含 `error` 文案。
 
 5. **结束**  
    - 最后一条为 `data: [DONE]\n\n`。
 
-**每条 SSE 的 `data` 为 JSON 字符串，示例：**
+**SSE 数据格式示例**
 
 ```text
 data: {"type":"init","graphData":{...},"agentMeta":{...}}
 
-data: {"type":"step","step":{"stepIndex":0,"nodeId":"agent","status":"end","duration_ms":120,"output":{...},"label":"推理"}}
+data: {"type":"step","step":{"stepIndex":0,"nodeId":"retrieval","status":"end","duration_ms":120,"output":{...},"label":"知识库检索"}}
 
-data: {"type":"step","step":{"stepIndex":1,"nodeId":"tools","status":"end","duration_ms":800,"output":{...},"label":"知识库检索"}}
+data: {"type":"step","step":{"stepIndex":1,"nodeId":"generation","status":"end","duration_ms":800,"output":{...},"label":"生成回答"}}
 
 data: {"type":"done","finalState":{...},"steps":[...],"executionOrder":[...],"totalSteps":2,"graphData":{...},"agentMeta":{...}}
 
@@ -227,9 +229,9 @@ data: [DONE]
 **前端建议**
 
 - 收到 `init` 后渲染/更新 3D 图（nodes/edges）。
-- 每收到一条 `step` 更新当前步骤高亮与进度（stepIndex / totalSteps）。
+- 每收到一条 `step` 更新当前步骤高亮与进度。
 - **仅在收到 `done` 后再展示 `finalState.response`**，避免「先出答案、后出步骤」的体验。
-- 使用 `EventSource` 时需用 POST + body，标准 `EventSource` 不支持，可用 `fetch` + `ReadableStream` 或 axios 等按行解析 `data:`。
+- 因需 POST + body，不能用标准 `EventSource`，请用 `fetch` + `ReadableStream` 按行解析 `data:`（见下文示例）。
 
 ---
 
@@ -245,7 +247,7 @@ GET /ai/langgraph/graph?name=loop
 
 | 参数 | 类型   | 说明 |
 |------|--------|------|
-| `name` | string | 图名称：`router` | `loop` | `parallel`，默认 `router` |
+| `name` | string | 图名称：`router` \| `loop` \| `parallel`，缺省一般为 `router` |
 
 **响应示例**
 
@@ -286,10 +288,11 @@ Content-Type: application/json
 
 **各图推荐 `input`**
 
-- **router**：`{ "query": "今天天气怎么样？", "intent": "", "response": "" }`
-- **loop**：`{ "query": "示例问题", "messages": [], "next_step": "", "iteration": 0, "response": "" }`
-- **parallel**：`{ "input_text": "示例文本", "analyses": [], "final_result": "", "response": "" }`  
-  若只传 `query`，会映射到 `input_text`。
+| graph     | 推荐 input |
+|-----------|------------|
+| router    | `{ "query": "今天天气怎么样？", "intent": "", "response": "" }` |
+| loop      | `{ "query": "示例问题", "messages": [], "next_step": "", "iteration": 0, "response": "" }` |
+| parallel  | `{ "input_text": "示例文本", "analyses": [], "final_result": "", "response": "" }`；若只传 `query` 会映射到 `input_text` |
 
 **响应示例（非流式）**
 
@@ -298,71 +301,36 @@ Content-Type: application/json
   "code": 0,
   "msg": "ok",
   "data": {
-    "graphData": {
-      "nodes": [ ... ],
-      "edges": [ ... ],
-      "executionOrder": [ "think", "decide", "think", "decide", "respond" ]
-    },
+    "graphData": { "nodes": [ ... ], "edges": [ ... ], "executionOrder": [ "think", "decide", "think", "decide", "respond" ] },
     "steps": [
-      {
-        "stepIndex": 0,
-        "nodeId": "think",
-        "status": "end",
-        "duration_ms": 200,
-        "output": { "messages": [...], "iteration": 1 },
-        "iteration": 1,
-        "thought": "第一轮思考要点...",
-        "label": "第1轮思考"
-      },
-      {
-        "stepIndex": 1,
-        "nodeId": "decide",
-        "status": "end",
-        "duration_ms": 5,
-        "output": { "next_step": "think" },
-        "nextStep": "think",
-        "label": "继续思考"
-      },
-      {
-        "stepIndex": 4,
-        "nodeId": "respond",
-        "status": "end",
-        "duration_ms": 150,
-        "output": { "response": "最终回答内容..." },
-        "response": "最终回答内容...",
-        "label": "最终回答"
-      }
+      { "stepIndex": 0, "nodeId": "think", "status": "end", "duration_ms": 200, "output": { ... }, "iteration": 1, "thought": "...", "label": "第1轮思考" },
+      { "stepIndex": 1, "nodeId": "decide", "status": "end", "duration_ms": 5, "output": { ... }, "nextStep": "think", "label": "继续思考" },
+      { "stepIndex": 4, "nodeId": "respond", "status": "end", "duration_ms": 150, "output": { "response": "..." }, "response": "...", "label": "最终回答" }
     ],
-    "finalState": {
-      "messages": [ ... ],
-      "iteration": 3,
-      "query": "...",
-      "response": "最终回答内容..."
-    },
+    "finalState": { "messages": [ ... ], "iteration": 3, "query": "...", "response": "最终回答内容..." },
     "executionOrder": [ "think", "decide", "think", "decide", "respond" ],
     "totalSteps": 5
   }
 }
 ```
 
-- **状态**：`data.finalState.response` 为最终回答。
-- **步骤**：`data.steps` 含 `stepIndex`、`nodeId`、`label`，loop 图还有 `iteration`、`thought`、`nextStep` 等，便于时间线/步骤条展示。
+- 最终回答：`data.finalState.response`。
+- 步骤：`data.steps` 含 `stepIndex`、`nodeId`、`label`；loop 图还有 `iteration`、`thought`、`nextStep` 等。
 
 ---
 
 ### 3.3 执行图（流式 SSE）
 
-与 Agent 流式类似：`stream: true` 时响应为 SSE。
+与 Agent 流式类似：**`stream: true`** 时响应为 SSE。
 
-**事件顺序**
+**事件顺序**：init → step（多条）→ done → 结束 `data: [DONE]\n\n`；出错时发 **error**。
 
-1. **init**：`{ "type": "init", "graphData": { "nodes", "edges" } }`
-2. **step**：`{ "type": "step", "step": { stepIndex, nodeId, status, duration_ms, output, label, ... } }`
-3. **done**：`{ "type": "done", "finalState", "steps", "executionOrder", "totalSteps" }`
-4. **error**：`{ "type": "error", "error": "..." }`
-5. 结束：`data: [DONE]\n\n`
+- **init**：`{ "type": "init", "graphData": { "nodes", "edges" } }`
+- **step**：`{ "type": "step", "step": { stepIndex, nodeId, status, duration_ms, output, label, ... } }`
+- **done**：`{ "type": "done", "finalState", "steps", "executionOrder", "totalSteps" }`
+- **error**：`{ "type": "error", "error": "..." }`
 
-**前端建议**：与 Agent 一致——用 init 画图，用 step 更新步骤与进度，用 done 再展示 `finalState.response`。
+**前端建议**：与 Agent 一致——init 画图，step 更新步骤与进度，**done 后再展示 `finalState.response`**。
 
 ---
 
@@ -370,56 +338,166 @@ Content-Type: application/json
 
 ### 4.1 图结构 `graphData`
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `nodes` | array | `{ id, name, type, icon, description }` |
-| `edges` | array | `{ source, target, type: "normal" \| "conditional" }` |
-| `executionOrder` | array | 本次执行的节点 id 顺序（run 后才有） |
+| 字段            | 类型  | 说明 |
+|-----------------|-------|------|
+| `nodes`         | array | `{ id, name, type, icon, description }` |
+| `edges`         | array | `{ source, target, type: "normal" \| "conditional" }` |
+| `executionOrder`| array | 本次执行的节点 id 顺序（run 后才有） |
 
 ### 4.2 单步 `step`
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `stepIndex` | number | 从 0 开始的步序号 |
-| `nodeId` | string | 节点 id，与 graphData.nodes[].id 对应 |
-| `status` | string | 当前固定为 `"end"` |
-| `duration_ms` | number | 本步耗时（毫秒） |
-| `output` | object | 本步输出（原始状态片段） |
-| `label` | string | 前端展示用（如「推理」「知识库检索」「第1轮思考」「最终回答」） |
-| `iteration` | number | （loop 图）思考轮次 |
-| `thought` | string | （loop 图）本轮思考内容 |
-| `nextStep` | string | （loop 图）下一节点 |
-| `response` | string | （respond 节点）最终回答片段 |
+| 字段         | 类型   | 说明 |
+|--------------|--------|------|
+| `stepIndex`  | number | 从 0 开始的步序号 |
+| `nodeId`     | string | 节点 id，与 `graphData.nodes[].id` 对应 |
+| `status`     | string | 当前固定为 `"end"` |
+| `duration_ms`| number | 本步耗时（毫秒） |
+| `output`     | object | 本步输出（状态片段或结果） |
+| `label`      | string | 前端展示用（如「知识库检索」「生成回答」「第1轮思考」「最终回答」） |
+| `iteration`  | number | （loop 图）思考轮次 |
+| `thought`    | string | （loop 图）本轮思考内容 |
+| `nextStep`   | string | （loop 图）下一节点 |
+| `response`   | string | （respond 节点）最终回答片段 |
 
 ### 4.3 最终状态 `finalState`
 
-- **Agent（迪士尼）**：至少含 `messages`、`response`（最终回答文案）。
-- **LangGraph**：含图定义的 state 字段，如 `response`、`query`、`iteration`、`messages` 等；展示最终回答用 `finalState.response`。
+- **Agent（迪士尼 fund_qa_agent）**：与 LangGraph 对齐，含  
+  `query`、`response`、`sources`、`messages`（`[{role, content}, ...]`）。  
+  展示最终回答用 `finalState.response`，引用来源用 `finalState.sources`。
+- **其他 Agent / LangGraph**：含图定义的 state 字段，如 `response`、`query`、`iteration`、`messages` 等；展示最终回答用 `finalState.response`。
 
 ### 4.4 进度与顺序
 
 - **总步数**：`totalSteps`（与 `steps.length` 一致）。
 - **当前步**：第 n 步对应 `stepIndex === n - 1`。
-- **进度**：`(currentStepIndex + 1) / totalSteps`，或直接使用 `stepIndex` / `totalSteps`。
+- **进度**：`(stepIndex + 1) / totalSteps`。
 
 ---
 
-## 五、错误与边界
+## 五、前端使用示例
+
+### 5.1 非流式执行 Agent
+
+```javascript
+const runAgent = async (agentId, input) => {
+  const res = await fetch('/ai/agent/run', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ agent_id: agentId, input, stream: false }),
+  });
+  const json = await res.json();
+  if (json.code !== 0) throw new Error(json.msg || json.data?.error);
+  const { finalState, steps, totalSteps } = json.data;
+  console.log('最终回答:', finalState.response);
+  console.log('步骤数:', totalSteps);
+  steps.forEach((s) => console.log(`[${s.stepIndex}] ${s.label}`, s.nodeId));
+  return json.data;
+};
+```
+
+### 5.2 流式执行 Agent（SSE 解析）
+
+```javascript
+const runAgentStream = async (agentId, input, onInit, onStep, onDone, onError) => {
+  const res = await fetch('/ai/agent/run', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ agent_id: agentId, input, stream: true }),
+  });
+  if (!res.ok) throw new Error(res.statusText);
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      const data = line.slice(6);
+      if (data === '[DONE]') return;
+
+      try {
+        const event = JSON.parse(data);
+        switch (event.type) {
+          case 'init':
+            onInit?.(event.graphData, event.agentMeta);
+            break;
+          case 'step':
+            onStep?.(event.step);
+            break;
+          case 'done':
+            onDone?.(event);
+            break;
+          case 'error':
+            onError?.(event.error);
+            break;
+        }
+      } catch (e) {
+        // 忽略解析异常（如空行、注释）
+      }
+    }
+  }
+};
+
+// 使用示例
+await runAgentStream(
+  'fund_qa_agent',
+  { messages: [{ role: 'user', content: '上海迪士尼开放时间？' }] },
+  (graphData) => { /* 渲染 3D 图 */ },
+  (step) => { /* 高亮 step.nodeId，更新进度 step.stepIndex / step 总数 */ },
+  (payload) => { /* 展示 payload.finalState.response */ },
+  (err) => { console.error(err); }
+);
+```
+
+### 5.3 获取图结构并执行 LangGraph（非流式）
+
+```javascript
+const runGraph = async (graphName, queryOrInput) => {
+  const graphRes = await fetch(`/ai/langgraph/graph?name=${graphName}`);
+  const graphJson = await graphRes.json();
+  if (graphJson.code !== 0) throw new Error(graphJson.msg);
+  const graphData = graphJson.data;
+
+  const runRes = await fetch('/ai/langgraph/run', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      graph: graphName,
+      query: typeof queryOrInput === 'string' ? queryOrInput : undefined,
+      input: typeof queryOrInput === 'object' ? queryOrInput : undefined,
+      stream: false,
+    }),
+  });
+  const runJson = await runRes.json();
+  if (runJson.code !== 0) throw new Error(runJson.msg || runJson.data?.error);
+  return { graphData, runData: runJson.data };
+};
+```
+
+---
+
+## 六、错误与边界
 
 - **未知 agent_id / graph name**：GET schema 或 POST run 返回 400，`data.allowed` 会列出合法取值。
 - **run 执行异常**：非流式时 `data.error` 有文案；流式时发 `type: "error"` 的 SSE 事件。
-- **流式断开**：前端应处理连接中断，可提示「连接中断，请重试」并可选重发请求（非流式）保底。
+- **流式断开**：前端应处理连接中断，可提示「连接中断，请重试」并可选重发非流式请求作保底。
 
 ---
 
-## 六、小结
+## 七、接口一览
 
-| 能力 | 接口 | 状态 | 步骤 | 流式 |
-|------|------|------|------|------|
-| Agent 列表 | GET /ai/agent/list | - | - | - |
-| Agent 图结构 | GET /ai/agent/schema | - | - | - |
-| Agent 执行 | POST /ai/agent/run | finalState（含 response） | steps（stepIndex/label） | stream: true → SSE |
-| LangGraph 图结构 | GET /ai/langgraph/graph | - | - | - |
-| LangGraph 执行 | POST /ai/langgraph/run | finalState（含 response） | steps（stepIndex/label/...） | stream: true → SSE |
+| 能力           | 方法 | 路径                  | 状态       | 步骤     | 流式           |
+|----------------|------|-----------------------|------------|----------|----------------|
+| Agent 列表     | GET  | /ai/agent/list        | -          | -        | -              |
+| Agent 图结构   | GET  | /ai/agent/schema      | -          | -        | -              |
+| Agent 执行     | POST | /ai/agent/run         | finalState | steps    | stream: true → SSE |
+| LangGraph 图结构 | GET  | /ai/langgraph/graph   | -          | -        | -              |
+| LangGraph 执行 | POST | /ai/langgraph/run     | finalState | steps    | stream: true → SSE |
 
-前端可统一：**用 graphData 画图 → 用 steps 驱动步骤/进度 → 用 finalState.response 展示最终回答**；流式时先收 step 再在 done 后展示 response，保证「先步骤、后答案」的体验。
+前端可统一：**用 graphData 画图 → 用 steps 驱动步骤/进度 → 用 finalState.response 展示最终回答**；流式时先处理 step 再在 done 后展示 response，保证「先步骤、后答案」的体验。

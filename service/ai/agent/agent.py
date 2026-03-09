@@ -30,8 +30,10 @@ AGENT_BUILDERS = {
     "wealth_advisor_agent": create_wealth_advisor_workflow,
 }
 
-# 迪士尼客服等 ReAct 类 agent 的节点展示名（供前端 step 展示）
+# 迪士尼客服 agent 的节点展示名（供前端 step 展示）
 FUND_QA_NODE_LABELS = {
+    "retrieval": "知识库检索",
+    "generation": "生成回答",
     "agent": "推理",
     "tools": "知识库检索",
 }
@@ -117,7 +119,24 @@ def get_agent_schema(agent_id: str) -> Optional[dict]:
         schema["executionOrder"] = []  # 真实顺序由 POST /run 返回
         return schema
 
-    # 对于非 StateGraph 类型（如 fund_qa_agent），返回简化结构
+    # fund_qa_agent：两步 RAG 流程，节点与实际执行步骤对应
+    if agent_id == "fund_qa_agent":
+        return {
+            "nodes": [
+                {"id": "input",      "name": "用户输入",   "type": "input",   "icon": "📝", "description": "接收用户查询"},
+                {"id": "retrieval",  "name": "知识库检索", "type": "process", "icon": "🔍", "description": "向量检索迪士尼知识库"},
+                {"id": "generation", "name": "生成回答",   "type": "process", "icon": "🏰", "description": "基于检索结果生成答案"},
+                {"id": "output",     "name": "输出",       "type": "output",  "icon": "📢", "description": "返回最终答案"},
+            ],
+            "edges": [
+                {"source": "input",     "target": "retrieval",  "type": "normal"},
+                {"source": "retrieval", "target": "generation", "type": "normal"},
+                {"source": "generation","target": "output",     "type": "normal"},
+            ],
+            "executionOrder": [],
+        }
+
+    # 其他非 StateGraph 类型，返回通用简化结构
     meta = AGENT_META.get(agent_id, {})
     return {
         "nodes": [
