@@ -70,10 +70,14 @@ max_seq_length = 2048
 seed = 3407
 
 # ── Tokenizer ─────────────────────────────────────────────────────────────────
+# local_files_only 在部分 transformers 版本下会导致 config 以 dict 返回（无 .model_type），
+# 改为先显式加载 AutoConfig 再传入，绕过该 bug。
+from transformers import AutoConfig
+_tok_config = AutoConfig.from_pretrained(BASE_MODEL_PATH, trust_remote_code=True)
 tokenizer = AutoTokenizer.from_pretrained(
     BASE_MODEL_PATH,
+    config=_tok_config,
     trust_remote_code=True,
-    local_files_only=_LOCAL_MODEL,
 )
 if tokenizer.pad_token is None:
     tokenizer.pad_token = tokenizer.eos_token
@@ -93,7 +97,6 @@ if use_4bit:
         quantization_config=bnb_config,
         device_map="auto",
         trust_remote_code=True,
-        local_files_only=_LOCAL_MODEL,
     )
     model = prepare_model_for_kbit_training(model)
 else:
@@ -103,7 +106,6 @@ else:
         torch_dtype=_dtype,
         device_map="auto" if device == "cuda" else None,
         trust_remote_code=True,
-        local_files_only=_LOCAL_MODEL,
     )
     if device != "cuda":
         model = model.to(device)
