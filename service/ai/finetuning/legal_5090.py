@@ -50,13 +50,55 @@ def _fix_tokenizer_dict_bug():
 
 _fix_tokenizer_dict_bug()
 
+
+def _fix_sft_trainer_eos_check():
+    """把 SFTTrainer 里 eos_token 词表校验的 raise 降级为 pass（Qwen2+unsloth 兼容）。"""
+    try:
+        import importlib.util
+        spec = importlib.util.find_spec("trl.trainer.sft_trainer")
+        if not spec or not spec.origin:
+            return
+        with open(spec.origin, encoding="utf-8") as f:
+            src = f.read()
+        marker = "Ensure that the `eos_token` exists in the vocabulary"
+        if marker not in src:
+            print("[startup] SFTTrainer eos_token check 不存在或已修复，跳过")
+            return
+        # 用括号计数定位完整的 raise ValueError(...) 块并替换为 pass
+        idx = src.find(marker)
+        start = src.rfind("raise ValueError(", 0, idx)
+        if start == -1:
+            print("[startup] 未找到 raise ValueError，跳过")
+            return
+        depth, end = 0, start
+        for i, ch in enumerate(src[start:]):
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    end = start + i + 1
+                    break
+        old_block = src[start:end]
+        new_block = "pass  # eos_token check skipped (patched for Qwen2+unsloth)"
+        with open(spec.origin, "w", encoding="utf-8") as f:
+            f.write(src.replace(old_block, new_block, 1))
+        print("[startup] SFTTrainer eos_token check 已跳过")
+    except Exception as e:
+        print(f"[startup] SFTTrainer patch 失败: {e}")
+
+_fix_sft_trainer_eos_check()
+
 import torch
-from trl import SFTTrainer, SFTConfig
 from datasets import Dataset
 
 # Unsloth 在无外网时上报统计会崩溃，patch 掉 snapshot_download 拦截网络调用
 import unsloth.models._utils as _unsloth_utils
 _unsloth_utils.snapshot_download = lambda *a, **kw: None
+
+# trl 必须在 unsloth 完成 patch 之后 import，否则拿到的是未被 patch 的原始版本
+from unsloth import FastLanguageModel  # noqa: E402 - unsloth patches trl here
+from trl import SFTTrainer, SFTConfig  # noqa: E402 - import after unsloth patch
 
 from service.ai.finetuning.paths import (
     get_finetuning_root,
@@ -83,8 +125,6 @@ max_seq_length = 2048   # unsloth + packing 下高效利用，不再有填充浪
 seed = 3407
 
 # ── Unsloth：模型 + Tokenizer ──────────────────────────────────────────────────
-from unsloth import FastLanguageModel
-
 model, tokenizer = FastLanguageModel.from_pretrained(
     model_name=BASE_MODEL_PATH,
     max_seq_length=max_seq_length,
