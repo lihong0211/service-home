@@ -29,6 +29,11 @@ import torch
 from trl import SFTTrainer, SFTConfig
 from datasets import Dataset
 
+# Unsloth 在无外网环境下会因 get_statistics 上报失败而崩溃，提前 patch 掉
+os.environ.setdefault("HF_HUB_OFFLINE", "0")   # 不影响模型加载
+import unsloth.models._utils as _unsloth_utils
+_unsloth_utils.get_statistics = lambda *a, **kw: None
+
 from service.ai.finetuning.paths import (
     get_finetuning_root,
     get_run_parent_dir,
