@@ -240,7 +240,7 @@ sft_args = SFTConfig(
     save_strategy="no",
     dataset_text_field="text",
     max_length=max_seq_length,
-    packing=True,               # unsloth 内置 flash attention，packing 安全高效
+    packing=False,              # unsloth padding-free 下 packing 会超出 max_seq_length，关闭
     dataset_num_proc=4,
 )
 
