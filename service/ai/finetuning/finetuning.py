@@ -18,16 +18,18 @@ _base_model_tokenizer = None  # (base_model, tokenizer)，用于对比输出
 # 默认使用 1.5B + 医疗 LoRA 作为前端问答基础（轻量、响应快）
 _DEFAULT_MODEL_NAME = "Qwen2.5-1.5B-Instruct"
 
-# 前端选择的 LoRA 类型：medical=医疗问诊，legal=法律咨询，airpig=空气小猪客服；对应 lora/ 下目录名（None 表示用 get_latest_lora_dir）
+# 前端选择的 LoRA 类型：medical=医疗问诊，legal=法律咨询，airpig=空气小猪客服
+# 指定目录名时用 lora/{目录名}（如 medical、legal 无日期前缀）；None 时用 get_latest_lora_dir 取最新
 LORA_TYPE_DIRS = {
-    "medical": None,  # 使用最新 20260224_Qwen2.5-1.5B-Instruct 等
-    "legal": "20260225_Qwen2.5-1.5B-Instruct-legal",
-    "airpig": None,   # 使用最新 20260301_Qwen2.5-1.5B-Instruct-airpig 等
+    "medical": "medical",  # lora/medical
+    "legal": "legal",  # lora/legal
+    "airpig": None,
 }
-# 当 LORA_TYPE_DIRS[type] 为 None 时，用此 model_name 找最新 lora 目录（目录名后缀 _Qwen2.5-1.5B-Instruct 等）
+# 当 LORA_TYPE_DIRS[type] 为 None 时，用此 model_name 找最新 lora 目录（目录名后缀匹配）
 LORA_TYPE_MODEL_NAME = {
-    "medical": "Qwen2.5-1.5B-Instruct",
-    "airpig": "Qwen2.5-1.5B-Instruct-airpig",
+    "medical": "Qwen2.5-1.5B-Instruct-medical-5090",
+    "legal": "Qwen2.5-1.5B-Instruct-legal-5090",
+    "airpig": None,
 }
 
 
@@ -38,12 +40,18 @@ def _get_paths(lora_type="medical"):
     - Base 模型：项目根 / models / Qwen / {FINETUNING_MODEL_NAME}
     - LoRA：LORA_TYPE_DIRS[lora_type] 指定目录名时用 lora/{目录名}，否则用 get_latest_lora_dir。
     """
-    from service.ai.finetuning.paths import get_finetuning_root, get_latest_lora_dir, get_project_root
+    from service.ai.finetuning.paths import (
+        get_finetuning_root,
+        get_latest_lora_dir,
+        get_project_root,
+    )
 
     project_root = get_project_root()
     file_path = Path(__file__).resolve()
     model_name = os.environ.get("FINETUNING_MODEL_NAME", _DEFAULT_MODEL_NAME)
-    base = os.environ.get("FINETUNING_BASE_MODEL") or str(project_root / "models" / "Qwen" / model_name)
+    base = os.environ.get("FINETUNING_BASE_MODEL") or str(
+        project_root / "models" / "Qwen" / model_name
+    )
     lora_env = os.environ.get("FINETUNING_LORA_PATH")
     if lora_env:
         lora = lora_env
@@ -179,6 +187,7 @@ def get_base_model():
 def _run_one_model(model, tokenizer, prompt, gen_kw):
     """对单个模型做一次 generate，返回解码后的文本。"""
     import torch
+
     enc = tokenizer(prompt, return_tensors="pt")
     enc = {k: v.to(model.device) for k, v in enc.items() if k != "token_type_ids"}
     with torch.no_grad():
@@ -196,6 +205,63 @@ AIRPIG_SYSTEM_PROMPT = (
     "请仅根据上述产品定义回答。若问「解决什么核心问题」，应回答：学外语无法进入日常生活、输入输出割裂、材料与生活无关难以坚持等；"
     "空气小猪通过重用已有聊天内容，为用户建立长期、低成本、真实相关的外语环境。"
 )
+
+
+# 法律/医疗 LoRA 训练时用的 prompt，推理必须一致，否则答非所问
+LEGAL_PROMPT_TEMPLATE = """你是一个专业的法律咨询助手。请根据用户的问题提供专业、准确的法律建议。
+
+### 问题：
+{}
+
+### 回答：
+"""
+
+MEDICAL_PROMPT_TEMPLATE = """你是一个专业的医疗助手。请根据患者的问题提供专业、准确的回答。
+
+### 问题：
+{}
+
+### 回答：
+"""
+
+# 法律 LoRA 有时会漂移到医疗话术，检测到下列片段时截断，保留前半段法律相关回复
+LEGAL_DRIFT_PHRASES = (
+    "其实得了", "并不可怕", "战胜病魔", "对症治疗", "缓解病情", "患者要相信",
+    "外科疾病", "及时发现症状", "康复的几率",
+)
+
+
+def _truncate_legal_drift(text):
+    """若法律回复中出现典型医疗漂移用语，截断到该处之前（保留最后一个完整句）。"""
+    if not text or not isinstance(text, str):
+        return text
+    first = len(text)
+    for phrase in LEGAL_DRIFT_PHRASES:
+        i = text.find(phrase)
+        if i != -1 and i < first:
+            first = i
+    if first >= len(text):
+        return text
+    out = text[:first].rstrip()
+    # 尽量在句号处截断
+    last_period = out.rfind("。")
+    if last_period != -1:
+        out = out[: last_period + 1]
+    return out.strip() or text[:first].strip()
+
+
+def _prompt_for_sft_lora(lora_type, messages):
+    """legal/medical 推理时用与训练一致的 prompt 格式，避免与 apply_chat_template 不一致导致答非所问。"""
+    if lora_type not in ("legal", "medical"):
+        return None
+    # 取最后一条用户内容作为问题（或拼接所有 user 内容）
+    parts = [m.get("content", "") or "" for m in messages if (m.get("role") or "").strip().lower() == "user"]
+    question = " ".join(parts).strip() or (messages[-1].get("content") if messages else "") or ""
+    if lora_type == "legal":
+        return LEGAL_PROMPT_TEMPLATE.format(question)
+    if lora_type == "medical":
+        return MEDICAL_PROMPT_TEMPLATE.format(question)
+    return None
 
 
 def _inject_airpig_system(messages):
@@ -227,7 +293,9 @@ def _messages_to_input(messages, tokenizer):
         content = m.get("content")
         if isinstance(content, list):
             content = " ".join(
-                x.get("text", str(x)) for x in content if isinstance(x, dict) and "text" in x
+                x.get("text", str(x))
+                for x in content
+                if isinstance(x, dict) and "text" in x
             ) or str(content)
         if not isinstance(content, str):
             content = str(content) if content is not None else ""
@@ -247,7 +315,9 @@ def _messages_to_input(messages, tokenizer):
 def _gen_kwargs(request_options, tokenizer):
     """从请求 options 里取出 generate 参数。"""
     opts = request_options or {}
-    pad_id = getattr(tokenizer, "pad_token_id", None) or getattr(tokenizer, "eos_token_id")
+    pad_id = getattr(tokenizer, "pad_token_id", None) or getattr(
+        tokenizer, "eos_token_id"
+    )
     return {
         "max_new_tokens": int(opts.get("num_predict", opts.get("max_new_tokens", 512))),
         "temperature": float(opts.get("temperature", 0.7)),
@@ -271,16 +341,22 @@ def chat(messages, stream=False, options=None, lora_type="medical"):
     if lora_type == "airpig":
         messages = _inject_airpig_system(messages)
     model, tokenizer = get_model(lora_type=lora_type)
-    prompt = _messages_to_input(messages, tokenizer)
+    prompt = _prompt_for_sft_lora(lora_type, messages)
+    if prompt is None:
+        prompt = _messages_to_input(messages, tokenizer)
     gen_kw = _gen_kwargs(options, tokenizer)
 
     import torch
+
     enc = tokenizer(prompt, return_tensors="pt")
     enc = {k: v.to(model.device) for k, v in enc.items() if k != "token_type_ids"}
 
     if stream:
         from transformers import TextIteratorStreamer
-        streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
+
+        streamer = TextIteratorStreamer(
+            tokenizer, skip_prompt=True, skip_special_tokens=True
+        )
         gen_kw["streamer"] = streamer
         gen_kw["max_new_tokens"] = gen_kw.get("max_new_tokens", 512)
 
@@ -295,6 +371,8 @@ def chat(messages, stream=False, options=None, lora_type="medical"):
         t.join()
         return
     text = _run_one_model(model, tokenizer, prompt, gen_kw)
+    if lora_type == "legal":
+        text = _truncate_legal_drift(text)
     yield text
 
 
@@ -314,10 +392,14 @@ def chat_sync_compare(messages, options=None, lora_type="medical"):
         messages = _inject_airpig_system(messages)
     lora_model, tokenizer = get_model(lora_type=lora_type)
     base_model, _ = get_base_model()
-    prompt = _messages_to_input(messages, tokenizer)
+    prompt = _prompt_for_sft_lora(lora_type, messages)
+    if prompt is None:
+        prompt = _messages_to_input(messages, tokenizer)
     gen_kw = _gen_kwargs(options, tokenizer)
     base_text = _run_one_model(base_model, tokenizer, prompt, gen_kw)
     lora_text = _run_one_model(lora_model, tokenizer, prompt, gen_kw)
+    if lora_type == "legal":
+        lora_text = _truncate_legal_drift(lora_text)
     return {"base": base_text, "lora": lora_text}
 
 
@@ -339,7 +421,9 @@ def chat_stream_compare(messages, options=None, lora_type="medical"):
         messages = _inject_airpig_system(messages)
     base_model, tokenizer = get_base_model()
     lora_model, _ = get_model(lora_type=lora_type)
-    prompt = _messages_to_input(messages, tokenizer)
+    prompt = _prompt_for_sft_lora(lora_type, messages)
+    if prompt is None:
+        prompt = _messages_to_input(messages, tokenizer)
     gen_kw = _gen_kwargs(options, tokenizer)
     gen_kw["max_new_tokens"] = gen_kw.get("max_new_tokens", 512)
 
@@ -350,8 +434,12 @@ def chat_stream_compare(messages, options=None, lora_type="medical"):
 
     enc_base = make_enc(base_model.device)
     enc_lora = make_enc(lora_model.device)
-    base_streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
-    lora_streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
+    base_streamer = TextIteratorStreamer(
+        tokenizer, skip_prompt=True, skip_special_tokens=True
+    )
+    lora_streamer = TextIteratorStreamer(
+        tokenizer, skip_prompt=True, skip_special_tokens=True
+    )
     shared = Queue()
 
     def run_base():
@@ -410,6 +498,7 @@ LORA_OPTIONS = [
 def list_lora_options_api():
     """GET /ai/finetuning/lora-options：返回可选 LoRA 列表，供前端选择模型。"""
     from flask import jsonify
+
     return jsonify({"code": 0, "msg": "ok", "data": LORA_OPTIONS})
 
 
@@ -429,7 +518,9 @@ def finetuning_chat_api():
     compare = data.get("compare", False)
     options = data.get("options", {})
     # 前端选择 LoRA：medical=医疗问诊，legal=法律咨询，airpig=空气小猪客服
-    lora_type = (data.get("lora") or data.get("model_type") or "medical").strip().lower()
+    lora_type = (
+        (data.get("lora") or data.get("model_type") or "medical").strip().lower()
+    )
     if lora_type not in LORA_TYPE_DIRS:
         lora_type = "medical"
 
@@ -439,7 +530,9 @@ def finetuning_chat_api():
                 # 同时流式输出 base 与 lora 两路，事件格式 {"source": "base"|"lora", "content": "..."} 或 {"source": "...", "done": true}
                 def generate_compare():
                     try:
-                        for source, chunk in chat_stream_compare(messages, options=options, lora_type=lora_type):
+                        for source, chunk in chat_stream_compare(
+                            messages, options=options, lora_type=lora_type
+                        ):
                             if chunk is None:
                                 out = {"source": source, "done": True}
                             else:
@@ -451,9 +544,12 @@ def finetuning_chat_api():
 
                 gen = generate_compare()
             else:
+
                 def generate():
                     try:
-                        for chunk in chat_stream(messages, options=options, lora_type=lora_type):
+                        for chunk in chat_stream(
+                            messages, options=options, lora_type=lora_type
+                        ):
                             out = {"message": {"content": chunk}, "response": chunk}
                             yield f"data: {json.dumps(out, ensure_ascii=False)}\n\n"
                         yield "data: [DONE]\n\n"
@@ -475,19 +571,21 @@ def finetuning_chat_api():
         # 非流式：同时返回基座与 LoRA 两种回复，便于对比
         result = chat_sync_compare(messages, options=options, lora_type=lora_type)
         _, lora_path_used = _get_paths(lora_type)
-        return jsonify({
-            "code": 0,
-            "lora_type": lora_type,
-            "lora_path_used": lora_path_used,
-            "message": {
-                "role": "assistant",
-                "content": result.get("lora") or "",
-                "base_content": result.get("base") or "",
-                "lora_content": result.get("lora") or "",
-            },
-            "base": result.get("base") or "",
-            "lora": result.get("lora") or "",
-        })
+        return jsonify(
+            {
+                "code": 0,
+                "lora_type": lora_type,
+                "lora_path_used": lora_path_used,
+                "message": {
+                    "role": "assistant",
+                    "content": result.get("lora") or "",
+                    "base_content": result.get("base") or "",
+                    "lora_content": result.get("lora") or "",
+                },
+                "base": result.get("base") or "",
+                "lora": result.get("lora") or "",
+            }
+        )
     except FileNotFoundError as e:
         return jsonify({"code": 404, "msg": str(e)}), 404
     except ValueError as e:

@@ -18,10 +18,13 @@ LORA_LEGAL_5090 = "Qwen2.5-1.5B-Instruct-legal-5090"
 
 
 def get_latest_legal_lora_dir():
-    """取最新的法律 5090 LoRA 目录。"""
+    """取法律 LoRA 目录：优先 lora/legal（与 finetuning 服务一致），否则取最新 dated 目录。"""
     lora_base = PROJECT_ROOT / "lora"
     if not lora_base.is_dir():
         return None
+    fixed = lora_base / "legal"
+    if fixed.is_dir() and (fixed / "adapter_config.json").exists():
+        return fixed
     prefix = "_" + LORA_LEGAL_5090
     candidates = [d for d in lora_base.iterdir() if d.is_dir() and d.name.endswith(prefix)]
     if not candidates:
@@ -37,7 +40,7 @@ def main():
 
     lora_dir = get_latest_legal_lora_dir()
     if lora_dir is None:
-        print("未找到法律 LoRA 目录 (lora/*_Qwen2.5-1.5B-Instruct-legal-5090)", file=sys.stderr)
+        print("未找到法律 LoRA 目录 (lora/legal 或 lora/*_Qwen2.5-1.5B-Instruct-legal-5090)", file=sys.stderr)
         sys.exit(1)
 
     questions = [q.strip() for q in sys.argv[1:] if q.strip()]

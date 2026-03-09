@@ -1,8 +1,10 @@
 #!/usr/bin/env python
 # coding: utf-8
 """
-Qwen2.5-1.5B 法律咨询微调 - 使用法律 QA + 罪名知识数据集训练 LoRA。
-数据来源：
+Qwen2.5-1.5B Base 法律咨询微调 - 使用法律 QA + 罪名知识数据集训练 LoRA。
+
+基座为 Qwen2.5-1.5B（无 -Instruct），未做指令微调，法律能力全靠本数据集微调。
+数据来源同 Qwen2_5_(1.5B)_legal_hf.py：
 - dataset/【数据集】legal/qa_corpus.json（JSONL，question + answers + category）
 - dataset/【数据集】legal/kg_crime.json（JSONL，罪名概念/特征/认定/处罚）
 """
@@ -40,15 +42,13 @@ from service.ai.finetuning.paths import (
 # ---------- 路径配置 ----------
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(_SCRIPT_DIR)))
-BASE_MODEL_PATH = os.path.join(_PROJECT_ROOT, "models", "Qwen", "Qwen2.5-1.5B-Instruct")
+BASE_MODEL_PATH = os.path.join(_PROJECT_ROOT, "models", "Qwen", "Qwen2.5-1.5B")
 if not os.path.isdir(BASE_MODEL_PATH):
-    BASE_MODEL_PATH = os.path.join(
-        _SCRIPT_DIR, "models", "Qwen", "Qwen2.5-1.5B-Instruct"
-    )
+    BASE_MODEL_PATH = os.path.join(_SCRIPT_DIR, "models", "Qwen", "Qwen2.5-1.5B")
 _LOCAL_MODEL = os.path.isdir(BASE_MODEL_PATH)
 
-# 法律 LoRA 单独目录，不与医疗混用：lora/{日期}_Qwen2.5-1.5B-Instruct-legal
-LEGAL_RUN_NAME = "Qwen2.5-1.5B-Instruct-legal"
+# 法律 LoRA（Base 基座）单独目录：lora/{日期}_Qwen2.5-1.5B-legal
+LEGAL_RUN_NAME = "Qwen2.5-1.5B-legal"
 _RUN_PARENT = get_run_parent_dir(get_finetuning_root(), model_name=LEGAL_RUN_NAME)
 os.makedirs(_RUN_PARENT, exist_ok=True)
 LORA_SAVE_DIR = str(get_lora_dir(_RUN_PARENT))
@@ -156,6 +156,7 @@ dataset = load_legal_data(
     max_question_len=400,
     max_answer_len=800,
     use_first_answer_only=True,
+    answer_choice="longest",
 )
 if MAX_TRAIN_SAMPLES is not None:
     n = min(MAX_TRAIN_SAMPLES, len(dataset))
@@ -194,7 +195,7 @@ trainer = SFTTrainer(
 )
 
 # ---------- 训练 ----------
-print("开始训练法律咨询 LoRA...")
+print("开始训练法律咨询 LoRA（Base 基座）...")
 trainer.train()
 model.save_pretrained(LORA_SAVE_DIR)
 tokenizer.save_pretrained(LORA_SAVE_DIR)

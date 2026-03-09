@@ -92,6 +92,7 @@ def load_legal_data(
     max_answer_len=800,
     max_question_len=300,
     use_first_answer_only=True,
+    answer_choice="first",
     include_kg_crime=True,
     kg_crime_max_answer_len=1200,
 ):
@@ -102,7 +103,8 @@ def load_legal_data(
     :param json_path: qa_corpus.json 路径，默认项目下 dataset/【数据集】legal/qa_corpus.json
     :param max_question_len: 问题最大长度，过长跳过
     :param max_answer_len: 回答最大长度；若 use_first_answer_only=False 则多条回答拼接后截断
-    :param use_first_answer_only: True 只取 answers[0]，False 则用 " ".join(answers)
+    :param use_first_answer_only: True 只取一条回答（由 answer_choice 决定），False 则用 " ".join(answers)
+    :param answer_choice: "first" 用 answers[0]，"longest" 用 answers 中最长的一条（更易学到完整表述）
     :param include_kg_crime: 是否同时加载 kg_crime.json 罪名知识并合并到训练集
     :param kg_crime_max_answer_len: 罪名知识条目的回答最大长度
     """
@@ -126,7 +128,11 @@ def load_legal_data(
             if not q or not answers or not isinstance(answers, (list, tuple)):
                 continue
             if use_first_answer_only:
-                a = (answers[0] or "").strip()
+                if answer_choice == "longest":
+                    candidates = [(str(x) or "").strip() for x in answers if x]
+                    a = max(candidates, key=len) if candidates else ""
+                else:
+                    a = (answers[0] or "").strip()
             else:
                 a = " ".join((str(x) or "").strip() for x in answers if x).strip()
             if not a or len(q) > max_question_len or len(a) > max_answer_len:
