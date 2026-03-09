@@ -224,24 +224,24 @@ print(f"样本示例（前500字）:\n{texts[0][:500]}\n{'─'*60}")
 # ── 训练参数 ──────────────────────────────────────────────────────────────────
 sft_args = SFTConfig(
     output_dir=OUTPUT_DIR,
-    per_device_train_batch_size=8,
-    gradient_accumulation_steps=4,
-    num_train_epochs=2,  # Instruct 基座收敛更快，2 epoch 即可
-    learning_rate=1e-4,  # Instruct 上 lr 适当降低，避免过拟合
+    per_device_train_batch_size=4,
+    gradient_accumulation_steps=8,   # 等效 batch=32，与原 8×4 相同
+    num_train_epochs=2,
+    learning_rate=1e-4,
     warmup_ratio=0.03,
     bf16=(device == "cuda" and use_bf16),
     fp16=(device == "cuda" and not use_bf16),
     logging_steps=10,
     optim="adamw_8bit" if use_4bit else "adamw_torch",
     weight_decay=0.01,
-    lr_scheduler_type="cosine",  # cosine 比 linear 对 Instruct 模型更友好
+    lr_scheduler_type="cosine",
     seed=seed,
     report_to="none",
     save_strategy="no",
     gradient_checkpointing=(device == "cuda"),
     dataset_text_field="text",
     max_length=max_seq_length,
-    packing=True,  # packing=True 对齐长度，提升 5090 显存利用率
+    packing=False,                   # 无 flash_attention_2 时关闭，否则 OOM
     dataset_num_proc=4,
 )
 
