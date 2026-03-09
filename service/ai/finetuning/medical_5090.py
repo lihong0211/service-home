@@ -1,15 +1,21 @@
 #!/usr/bin/env python
 # coding: utf-8
 """
-Qwen2.5-1.5B 医疗微调 - RTX 5090（32GB）版本。
-默认全量 bf16 + batch=8 + gradient checkpointing，不保存 outputs_hf checkpoint。
-若 OOM 可启用 4bit：USE_4BIT=1 python -m ...
+医疗问答 LoRA 微调 - Qwen2.5-1.5B-Instruct + HuatuoGPT 高质量数据集（RTX 5090）。
+结构对齐 legal_5090：Unsloth + flash_attn + Qwen chat template。
 
-数据来源同 Qwen2_5_(1.5B)_medical_hf.py：dataset/【数据集】中文医疗数据 或脚本同目录下。
+基座：Qwen2.5-1.5B-Instruct
+数据：
+  - dataset/【数据集】medical_hq/HuatuoGPT-sft-v1/HuatuoGPT_sft_data_v1.jsonl  (226,042条，问答多轮)
+  - dataset/【数据集】medical_hq/huatuo_encyclopedia_qa/train_datasets.jsonl     (362,420条，医学百科)
+  (huatuo_consultation_qa answers 是 URL，跳过)
 """
 
 import os
 import sys
+import json
+import random
+from pathlib import Path
 
 try:
     _bootstrap_dir = os.path.dirname(os.path.abspath(__file__))
@@ -19,17 +25,74 @@ _bootstrap_root = os.path.dirname(os.path.dirname(os.path.dirname(_bootstrap_dir
 if _bootstrap_root not in sys.path:
     sys.path.insert(0, _bootstrap_root)
 
+
+# ── Patch：修复 transformers tokenizer bug ─────────────────────────────────────
+def _fix_tokenizer_dict_bug():
+    try:
+        import importlib.util
+        spec = importlib.util.find_spec("transformers.tokenization_utils_base")
+        if not spec or not spec.origin:
+            return
+        with open(spec.origin, encoding="utf-8") as f:
+            src = f.read()
+        old = "if _is_local and _config.model_type not in ["
+        new = 'if _is_local and getattr(_config, "model_type", None) not in ['
+        if old in src:
+            with open(spec.origin, "w", encoding="utf-8") as f:
+                f.write(src.replace(old, new, 1))
+            print("[startup] transformers tokenizer dict bug 已修复")
+        else:
+            print("[startup] transformers tokenizer bug 不存在或已修复，跳过")
+    except Exception as e:
+        print(f"[startup] tokenizer patch 失败: {e}")
+
+
+_fix_tokenizer_dict_bug()
+
+
+def _fix_sft_trainer_eos_check():
+    """SFTTrainer eos_token 词表校验 → pass（Qwen2+unsloth 兼容）。"""
+    try:
+        import importlib.util
+        spec = importlib.util.find_spec("trl.trainer.sft_trainer")
+        if not spec or not spec.origin:
+            return
+        with open(spec.origin, encoding="utf-8") as f:
+            src = f.read()
+        marker = "Ensure that the `eos_token` exists in the vocabulary"
+        if marker not in src:
+            print("[startup] SFTTrainer eos_token check 不存在或已修复，跳过")
+            return
+        idx = src.find(marker)
+        start = src.rfind("raise ValueError(", 0, idx)
+        if start == -1:
+            return
+        depth, end = 0, start
+        for i, ch in enumerate(src[start:]):
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    end = start + i + 1
+                    break
+        with open(spec.origin, "w", encoding="utf-8") as f:
+            f.write(src.replace(src[start:end], "pass  # patched for Qwen2+unsloth", 1))
+        print("[startup] SFTTrainer eos_token check 已跳过")
+    except Exception as e:
+        print(f"[startup] SFTTrainer patch 失败: {e}")
+
+
+_fix_sft_trainer_eos_check()
+
 import torch
-from transformers import (
-    AutoModelForCausalLM,
-    AutoTokenizer,
-    PreTrainedTokenizerFast,
-    BitsAndBytesConfig,
-)
-from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
-from trl import SFTTrainer, SFTConfig
-import pandas as pd
 from datasets import Dataset
+
+import unsloth.models._utils as _unsloth_utils
+_unsloth_utils.snapshot_download = lambda *a, **kw: None
+
+from unsloth import FastLanguageModel
+from trl import SFTTrainer, SFTConfig
 
 from service.ai.finetuning.paths import (
     get_finetuning_root,
@@ -38,234 +101,197 @@ from service.ai.finetuning.paths import (
     get_outputs_hf_dir,
 )
 
-# ---------- 路径配置 ----------
+# ── 路径 ──────────────────────────────────────────────────────────────────────
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(_SCRIPT_DIR)))
+
 BASE_MODEL_PATH = os.path.join(_PROJECT_ROOT, "models", "Qwen", "Qwen2.5-1.5B-Instruct")
 if not os.path.isdir(BASE_MODEL_PATH):
-    BASE_MODEL_PATH = os.path.join(
-        _SCRIPT_DIR, "models", "Qwen", "Qwen2.5-1.5B-Instruct"
-    )
-_LOCAL_MODEL = os.path.isdir(BASE_MODEL_PATH)
+    BASE_MODEL_PATH = os.path.join(_SCRIPT_DIR, "models", "Qwen", "Qwen2.5-1.5B-Instruct")
 
-# 医疗数据：优先项目 dataset，其次脚本同目录
-MEDICAL_DATA_DIR = os.path.join(_PROJECT_ROOT, "dataset", "【数据集】中文医疗数据")
-if not os.path.isdir(MEDICAL_DATA_DIR):
-    MEDICAL_DATA_DIR = os.path.join(_SCRIPT_DIR, "【数据集】中文医疗数据")
+_DATA_ROOT = Path(_PROJECT_ROOT) / "dataset" / "【数据集】medical_hq"
+_HUATUO_SFT   = _DATA_ROOT / "HuatuoGPT-sft-v1" / "HuatuoGPT_sft_data_v1.jsonl"
+_ENCYCLOPEDIA = _DATA_ROOT / "huatuo_encyclopedia_qa" / "train_datasets.jsonl"
 
-# 5090 版单独目录
-MEDICAL_RUN_NAME = "Qwen2.5-1.5B-Instruct-medical-5090"
+MEDICAL_RUN_NAME = "Qwen2.5-1.5B-Instruct-medical-huatuo-5090"
 _RUN_PARENT = get_run_parent_dir(get_finetuning_root(), model_name=MEDICAL_RUN_NAME)
 os.makedirs(_RUN_PARENT, exist_ok=True)
 LORA_SAVE_DIR = str(get_lora_dir(_RUN_PARENT))
 OUTPUT_DIR = str(get_outputs_hf_dir(_RUN_PARENT))
-print(f"本次运行目录: {_RUN_PARENT} -> lora: {LORA_SAVE_DIR}, outputs_hf: {OUTPUT_DIR}")
+print(f"基座: {BASE_MODEL_PATH}")
+print(f"LoRA 保存: {LORA_SAVE_DIR}")
 
-# ---------- 设备与精度 -----------
-if torch.cuda.is_available():
-    device = "cuda"
-    use_4bit = os.environ.get("USE_4BIT", "").strip() in ("1", "true", "yes")
-    use_bf16 = torch.cuda.is_bf16_supported() and not use_4bit
-else:
-    device = (
-        "mps"
-        if (getattr(torch.backends, "mps", None) and torch.backends.mps.is_available())
-        else "cpu"
-    )
-    use_4bit = False
-    use_bf16 = False
-print(f"使用设备: {device}, 4bit: {use_4bit}, bf16: {use_bf16}")
-
-max_seq_length = 2048
+max_seq_length = 1024
 seed = 3407
 
-# ---------- 加载 tokenizer ----------
-if _LOCAL_MODEL:
-    tokenizer = PreTrainedTokenizerFast(
-        tokenizer_file=os.path.join(BASE_MODEL_PATH, "tokenizer.json")
-    )
-    if getattr(tokenizer, "eos_token", None) is None:
-        tokenizer.eos_token = "<|endoftext|>"
-else:
-    tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL_PATH, trust_remote_code=True)
-EOS_TOKEN = getattr(tokenizer, "eos_token", None) or "<|endoftext|>"
-
-# ---------- 加载模型 -----------
-if use_4bit:
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_compute_dtype=(
-            torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-        ),
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_use_double_quant=True,
-    )
-    model = AutoModelForCausalLM.from_pretrained(
-        BASE_MODEL_PATH,
-        quantization_config=bnb_config,
-        device_map="auto",
-        trust_remote_code=True,
-        local_files_only=_LOCAL_MODEL,
-    )
-    model = prepare_model_for_kbit_training(model)
-else:
-    _load_dtype = torch.bfloat16 if (device == "cuda" and use_bf16) else torch.float16
-    model = AutoModelForCausalLM.from_pretrained(
-        BASE_MODEL_PATH,
-        torch_dtype=_load_dtype,
-        device_map="auto" if device == "cuda" else None,
-        trust_remote_code=True,
-        local_files_only=_LOCAL_MODEL,
-    )
-    if device != "cuda":
-        model = model.to(device)
-
-# ---------- LoRA ----------
-lora_config = LoraConfig(
-    r=16,
-    lora_alpha=16,
-    target_modules=[
-        "q_proj",
-        "k_proj",
-        "v_proj",
-        "o_proj",
-        "gate_proj",
-        "up_proj",
-        "down_proj",
-    ],
-    lora_dropout=0,
-    bias="none",
-    task_type="CAUSAL_LM",
+# ── Unsloth：模型 + Tokenizer ──────────────────────────────────────────────────
+model, tokenizer = FastLanguageModel.from_pretrained(
+    model_name=BASE_MODEL_PATH,
+    max_seq_length=max_seq_length,
+    dtype=None,
+    load_in_4bit=False,
+    local_files_only=True,
 )
-model = get_peft_model(model, lora_config)
-model.config.use_cache = False
-if hasattr(model, "enable_input_require_grads"):
-    model.enable_input_require_grads()
+print(f"设备: {next(model.parameters()).device}")
 
-# ---------- 数据 ----------
-medical_prompt = """你是一个专业的医疗助手。请根据患者的问题提供专业、准确的回答。
+tokenizer.add_special_tokens({"eos_token": "<|im_end|>"})
+tokenizer.eos_token_id = tokenizer.convert_tokens_to_ids("<|im_end|>")
+print(f"eos_token: {tokenizer.eos_token!r} (id={tokenizer.eos_token_id})")
 
-### 问题：
-{}
+# ── LoRA ──────────────────────────────────────────────────────────────────────
+model = FastLanguageModel.get_peft_model(
+    model,
+    r=16,
+    lora_alpha=32,
+    target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+    lora_dropout=0.05,
+    bias="none",
+    use_gradient_checkpointing="unsloth",
+    random_state=seed,
+    use_rslora=False,
+)
+model.print_trainable_parameters()
 
-### 回答：
-{}"""
+# ── System Prompt ──────────────────────────────────────────────────────────────
+SYSTEM_PROMPT = (
+    "你是一名专业医疗健康助手，专注于常见病症、用药知识与健康管理咨询。"
+    "回答时请：①简要分析可能的原因或病因；②给出具体、可操作的居家处理或用药建议；"
+    "③说明何种情况下需要及时就医。"
+    "重要原则：不做确定性诊断，不替代医生处方；"
+    "若描述的症状提示急症（如胸痛、呼吸困难、意识障碍等），请优先建议立即拨打急救电话或前往急诊。"
+)
 
-
-def read_csv_with_encoding(file_path):
-    for enc in ["gbk", "gb2312", "gb18030", "utf-8"]:
-        try:
-            return pd.read_csv(file_path, encoding=enc)
-        except UnicodeDecodeError:
-            continue
-    raise ValueError(f"无法读取: {file_path}")
-
-
-def load_medical_data(data_dir):
-    data = []
-    departments = {
-        "Andriatria_男科": "男科",
-        "IM_内科": "内科",
-        "Surgical_外科": "外科",
-        "Pediatric_儿科": "儿科",
-        "Oncology_肿瘤科": "肿瘤科",
-        "OAGD_妇产科": "妇产科",
-    }
-    for dept_dir, dept_name in departments.items():
-        dept_path = os.path.join(data_dir, dept_dir)
-        if not os.path.exists(dept_path):
-            print(f"目录不存在: {dept_path}")
-            continue
-        for f in os.listdir(dept_path):
-            if not f.endswith(".csv"):
+# ── 数据加载 ──────────────────────────────────────────────────────────────────
+def load_huatuo_sft(path, max_q=600, max_a=800):
+    """
+    data 字段格式：["问：xxx\n", "答：xxx\n", ...]
+    取每条对话第一对问答。
+    """
+    if not path.is_file():
+        print(f"[跳过] 不存在: {path}")
+        return []
+    records, skip = [], 0
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
                 continue
-            fp = os.path.join(dept_path, f)
             try:
-                df = read_csv_with_encoding(fp)
-                for _, row in df.iterrows():
-                    q = None
-                    if "question" in row:
-                        q = str(row["question"]).strip()
-                    elif "问题" in row:
-                        q = str(row["问题"]).strip()
-                    elif "ask" in row:
-                        q = str(row["ask"]).strip()
-                    a = None
-                    if "answer" in row:
-                        a = str(row["answer"]).strip()
-                    elif "回答" in row:
-                        a = str(row["回答"]).strip()
-                    elif "response" in row:
-                        a = str(row["response"]).strip()
-                    if not q or not a or len(q) > 200 or len(a) > 200:
-                        continue
-                    data.append(
-                        {
-                            "instruction": "请回答以下医疗相关问题",
-                            "input": q,
-                            "output": a,
-                        }
-                    )
-            except Exception as e:
-                print(f"处理 {f} 出错: {e}")
-    if not data:
-        raise ValueError("没有加载到任何数据")
-    print(f"加载 {len(data)} 条数据")
-    return Dataset.from_list(data)
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            turns = item.get("data") or []
+            # 找第一对 问/答
+            q = a = None
+            for turn in turns:
+                t = turn.strip()
+                if t.startswith("问：") and q is None:
+                    q = t[2:].strip()
+                elif t.startswith("答：") and q is not None and a is None:
+                    a = t[2:].strip()
+                    break
+            if not q or not a:
+                skip += 1
+                continue
+            if len(q) > max_q or len(a) > max_a:
+                skip += 1
+                continue
+            if len(q) < 5 or len(a) < 10:
+                skip += 1
+                continue
+            records.append({"question": q, "answer": a})
+    print(f"加载 HuatuoGPT-SFT: {len(records):,} 条（跳过 {skip:,}）")
+    return records
 
 
-def formatting_prompts_func(examples):
-    texts = []
-    for i, o in zip(examples["input"], examples["output"]):
-        texts.append(medical_prompt.format(i, o) + EOS_TOKEN)
-    return {"text": texts}
+def load_encyclopedia(path, max_q=300, max_a=800):
+    """
+    questions: list of list，取第一个问题
+    answers: 字符串
+    """
+    if not path.is_file():
+        print(f"[跳过] 不存在: {path}")
+        return []
+    records, skip = [], 0
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            qs = item.get("questions") or []
+            a  = (item.get("answers") or "").strip()
+            # questions 是 list of list 或 list of str
+            q = ""
+            if qs:
+                first = qs[0]
+                q = (first[0] if isinstance(first, list) else first).strip()
+            if not q or not a:
+                skip += 1
+                continue
+            if len(q) > max_q or len(a) > max_a:
+                skip += 1
+                continue
+            if len(q) < 5 or len(a) < 10:
+                skip += 1
+                continue
+            records.append({"question": q, "answer": a})
+    print(f"加载 encyclopedia: {len(records):,} 条（跳过 {skip:,}）")
+    return records
 
 
-MAX_TRAIN_SAMPLES = 10000
-SHUFFLE_BEFORE_SELECT = True
-_seed = seed
+MAX_TRAIN_SAMPLES = 10000   # 试跑；全量设为 None
 
-dataset = load_medical_data(MEDICAL_DATA_DIR)
-if MAX_TRAIN_SAMPLES is not None:
-    n = min(MAX_TRAIN_SAMPLES, len(dataset))
-    if SHUFFLE_BEFORE_SELECT and n < len(dataset):
-        dataset = dataset.shuffle(seed=_seed)
-    dataset = dataset.select(range(n))
-    print(
-        f"截取 {len(dataset)} 条"
-        + ("（已打乱混合各科室）" if SHUFFLE_BEFORE_SELECT and n < len(dataset) else "")
-    )
-dataset = dataset.map(formatting_prompts_func, batched=True)
+raw_data = load_huatuo_sft(_HUATUO_SFT) + load_encyclopedia(_ENCYCLOPEDIA)
+if not raw_data:
+    raise ValueError("没有加载到任何医疗数据，请检查路径")
+print(f"合并后: {len(raw_data):,} 条")
 
-# ---------- 训练参数（5090：大 batch，不保存 checkpoint）----------
-per_device_batch = 8 if device == "cuda" else 2
-gradient_accumulation_steps = 8
-warmup_steps = 2
-num_train_epochs = 3
-use_gradient_checkpointing = True
-optim_name = "adamw_8bit" if use_4bit else "adamw_torch"
+if MAX_TRAIN_SAMPLES is not None and MAX_TRAIN_SAMPLES < len(raw_data):
+    random.seed(seed)
+    raw_data = random.sample(raw_data, MAX_TRAIN_SAMPLES)
+print(f"训练用: {len(raw_data):,} 条")
 
+# ── 格式化：Qwen chat template ─────────────────────────────────────────────────
+def format_sample(item):
+    messages = [
+        {"role": "system",    "content": SYSTEM_PROMPT},
+        {"role": "user",      "content": item["question"]},
+        {"role": "assistant", "content": item["answer"]},
+    ]
+    return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+
+
+texts = [format_sample(item) for item in raw_data]
+dataset = Dataset.from_dict({"text": texts})
+print(f"格式化后样本数: {len(dataset):,}")
+if texts:
+    print(f"样本示例（前400字）:\n{texts[0][:400]}\n{'─'*60}")
+
+# ── 训练参数 ──────────────────────────────────────────────────────────────────
 sft_args = SFTConfig(
     output_dir=OUTPUT_DIR,
-    per_device_train_batch_size=per_device_batch,
-    gradient_accumulation_steps=gradient_accumulation_steps,
-    warmup_steps=warmup_steps,
-    num_train_epochs=num_train_epochs,
-    learning_rate=2e-4,
-    fp16=(device == "cuda" and not use_bf16),
-    bf16=(device == "cuda" and use_bf16),
-    logging_steps=1,
-    optim=optim_name,
+    per_device_train_batch_size=8,
+    gradient_accumulation_steps=4,
+    num_train_epochs=1,
+    learning_rate=1e-4,
+    warmup_ratio=0.03,
+    bf16=True,
+    fp16=False,
+    logging_steps=10,
+    optim="adamw_8bit",
     weight_decay=0.01,
-    lr_scheduler_type="linear",
+    lr_scheduler_type="cosine",
     seed=seed,
     report_to="none",
     save_strategy="no",
-    gradient_checkpointing=use_gradient_checkpointing,
     dataset_text_field="text",
     max_length=max_seq_length,
     packing=False,
-    dataset_num_proc=2,
+    dataset_num_proc=4,
 )
 
 trainer = SFTTrainer(
@@ -275,40 +301,38 @@ trainer = SFTTrainer(
     args=sft_args,
 )
 
-# ---------- 训练 ----------
-print("开始训练医疗 LoRA (5090 版)...")
+# ── 训练 ──────────────────────────────────────────────────────────────────────
+print("开始训练医疗 LoRA (Unsloth + HuatuoGPT)...")
 trainer.train()
 model.save_pretrained(LORA_SAVE_DIR)
 tokenizer.save_pretrained(LORA_SAVE_DIR)
 print(f"LoRA 已保存到: {LORA_SAVE_DIR}")
 
-# ---------- 简单推理示例 ----------
+
+# ── 推理示例 ──────────────────────────────────────────────────────────────────
 def generate_medical_response(question, model=None, tokenizer=None):
     m = model or trainer.model
     tok = tokenizer or getattr(trainer, "processing_class", None)
-    m.eval()
-    if getattr(tok, "pad_token", None) is None:
-        tok.pad_token = getattr(tok, "eos_token", "<|endoftext|>")
-    prompt = medical_prompt.format(question, "")
+    FastLanguageModel.for_inference(m)
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user",   "content": question},
+    ]
+    prompt = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     enc = tok(prompt, return_tensors="pt").to(m.device)
-    gen_kw = {k: v for k, v in enc.items() if k != "token_type_ids"}
-    eos_id = getattr(tok, "eos_token_id", None)
-    pad_id = getattr(tok, "pad_token_id", None) or eos_id
     with torch.no_grad():
         out = m.generate(
-            **gen_kw,
+            **enc,
             max_new_tokens=256,
             temperature=0.7,
             top_p=0.9,
-            repetition_penalty=1.25,
+            repetition_penalty=1.1,
             do_sample=True,
-            pad_token_id=pad_id,
-            eos_token_id=eos_id,
         )
-    gen = out[0][enc["input_ids"].shape[1] :]
+    gen = out[0][enc["input_ids"].shape[1]:]
     return tok.decode(gen, skip_special_tokens=True).strip()
 
 
 for q in ["我最近总是感觉头晕，应该怎么办？", "感冒发烧应该吃什么药？"]:
-    print("\n问题:", q)
-    print("回答:", generate_medical_response(q))
+    print(f"\n问题: {q}")
+    print(f"回答: {generate_medical_response(q)}")
