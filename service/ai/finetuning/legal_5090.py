@@ -25,13 +25,36 @@ _bootstrap_root = os.path.dirname(os.path.dirname(os.path.dirname(_bootstrap_dir
 if _bootstrap_root not in sys.path:
     sys.path.insert(0, _bootstrap_root)
 
+# ── 修复 transformers tokenizer bug（在任何 import 之前执行）─────────────────────
+# 部分版本的 transformers tokenization_utils_base.py 里有：
+#   if _is_local and _config.model_type not in [...]
+# 当 _config 是 dict 时报 AttributeError。修复：加 getattr 保护。
+def _fix_tokenizer_dict_bug():
+    try:
+        import importlib.util
+        spec = importlib.util.find_spec("transformers.tokenization_utils_base")
+        if not spec or not spec.origin:
+            return
+        with open(spec.origin, encoding="utf-8") as f:
+            src = f.read()
+        old = "if _is_local and _config.model_type not in ["
+        new = 'if _is_local and getattr(_config, "model_type", None) not in ['
+        if old in src:
+            with open(spec.origin, "w", encoding="utf-8") as f:
+                f.write(src.replace(old, new, 1))
+            print("[startup] transformers tokenizer dict bug 已修复")
+        else:
+            print("[startup] transformers tokenizer bug 不存在或已修复，跳过")
+    except Exception as e:
+        print(f"[startup] tokenizer patch 失败: {e}")
+
+_fix_tokenizer_dict_bug()
+
 import torch
 from trl import SFTTrainer, SFTConfig
 from datasets import Dataset
 
-# Unsloth 在无外网时会调用 snapshot_download 上报统计而崩溃。
-# llama.py 直接绑定了 get_statistics 函数引用，patch 模块属性无效；
-# 改为 patch _utils 里的 snapshot_download，stats_check 通过模块引用调用它，可拦截。
+# Unsloth 在无外网时上报统计会崩溃，patch 掉 snapshot_download 拦截网络调用
 import unsloth.models._utils as _unsloth_utils
 _unsloth_utils.snapshot_download = lambda *a, **kw: None
 
