@@ -211,7 +211,7 @@ def load_disc_law_sft(max_input_len=800, max_output_len=1000):
     return records
 
 
-MAX_TRAIN_SAMPLES = 10000  # 试跑；正式全量训练设为 None
+MAX_TRAIN_SAMPLES = None  # 试跑；正式全量训练设为 None
 
 raw_data = load_disc_law_sft(max_input_len=800, max_output_len=1000)
 if MAX_TRAIN_SAMPLES is not None and MAX_TRAIN_SAMPLES < len(raw_data):

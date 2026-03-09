@@ -30,6 +30,7 @@ if _bootstrap_root not in sys.path:
 def _fix_tokenizer_dict_bug():
     try:
         import importlib.util
+
         spec = importlib.util.find_spec("transformers.tokenization_utils_base")
         if not spec or not spec.origin:
             return
@@ -54,6 +55,7 @@ def _fix_sft_trainer_eos_check():
     """SFTTrainer eos_token 词表校验 → pass（Qwen2+unsloth 兼容）。"""
     try:
         import importlib.util
+
         spec = importlib.util.find_spec("trl.trainer.sft_trainer")
         if not spec or not spec.origin:
             return
@@ -89,6 +91,7 @@ import torch
 from datasets import Dataset
 
 import unsloth.models._utils as _unsloth_utils
+
 _unsloth_utils.snapshot_download = lambda *a, **kw: None
 
 from unsloth import FastLanguageModel
@@ -107,10 +110,12 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(_SCRIPT_DIR)))
 
 BASE_MODEL_PATH = os.path.join(_PROJECT_ROOT, "models", "Qwen", "Qwen2.5-1.5B-Instruct")
 if not os.path.isdir(BASE_MODEL_PATH):
-    BASE_MODEL_PATH = os.path.join(_SCRIPT_DIR, "models", "Qwen", "Qwen2.5-1.5B-Instruct")
+    BASE_MODEL_PATH = os.path.join(
+        _SCRIPT_DIR, "models", "Qwen", "Qwen2.5-1.5B-Instruct"
+    )
 
 _DATA_ROOT = Path(_PROJECT_ROOT) / "dataset" / "【数据集】medical_hq"
-_HUATUO_SFT   = _DATA_ROOT / "HuatuoGPT-sft-v1" / "HuatuoGPT_sft_data_v1.jsonl"
+_HUATUO_SFT = _DATA_ROOT / "HuatuoGPT-sft-v1" / "HuatuoGPT_sft_data_v1.jsonl"
 _ENCYCLOPEDIA = _DATA_ROOT / "huatuo_encyclopedia_qa" / "train_datasets.jsonl"
 
 MEDICAL_RUN_NAME = "Qwen2.5-1.5B-Instruct-medical-huatuo-5090"
@@ -143,7 +148,15 @@ model = FastLanguageModel.get_peft_model(
     model,
     r=16,
     lora_alpha=32,
-    target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+    target_modules=[
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj",
+    ],
     lora_dropout=0.05,
     bias="none",
     use_gradient_checkpointing="unsloth",
@@ -160,6 +173,7 @@ SYSTEM_PROMPT = (
     "重要原则：不做确定性诊断，不替代医生处方；"
     "若描述的症状提示急症（如胸痛、呼吸困难、意识障碍等），请优先建议立即拨打急救电话或前往急诊。"
 )
+
 
 # ── 数据加载 ──────────────────────────────────────────────────────────────────
 def load_huatuo_sft(path, max_q=600, max_a=800):
@@ -247,7 +261,7 @@ def load_encyclopedia(path, max_q=300, max_a=800):
     return records
 
 
-MAX_TRAIN_SAMPLES = 10000   # 试跑；全量设为 None
+MAX_TRAIN_SAMPLES = None  # 试跑；全量设为 None
 
 raw_data = load_huatuo_sft(_HUATUO_SFT) + load_encyclopedia(_ENCYCLOPEDIA)
 if not raw_data:
@@ -259,14 +273,17 @@ if MAX_TRAIN_SAMPLES is not None and MAX_TRAIN_SAMPLES < len(raw_data):
     raw_data = random.sample(raw_data, MAX_TRAIN_SAMPLES)
 print(f"训练用: {len(raw_data):,} 条")
 
+
 # ── 格式化：Qwen chat template ─────────────────────────────────────────────────
 def format_sample(item):
     messages = [
-        {"role": "system",    "content": SYSTEM_PROMPT},
-        {"role": "user",      "content": item["question"]},
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": item["question"]},
         {"role": "assistant", "content": item["answer"]},
     ]
-    return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+    return tokenizer.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=False
+    )
 
 
 texts = [format_sample(item) for item in raw_data]
@@ -320,9 +337,11 @@ def generate_medical_response(question, model=None, tokenizer=None):
     FastLanguageModel.for_inference(m)
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user",   "content": question},
+        {"role": "user", "content": question},
     ]
-    prompt = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    prompt = tok.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True
+    )
     enc = tok(prompt, return_tensors="pt").to(m.device)
     with torch.no_grad():
         out = m.generate(
@@ -333,7 +352,7 @@ def generate_medical_response(question, model=None, tokenizer=None):
             repetition_penalty=1.1,
             do_sample=True,
         )
-    gen = out[0][enc["input_ids"].shape[1]:]
+    gen = out[0][enc["input_ids"].shape[1] :]
     return tok.decode(gen, skip_special_tokens=True).strip()
 
 
