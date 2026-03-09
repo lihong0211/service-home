@@ -2,11 +2,11 @@
 # coding: utf-8
 """
 Qwen2.5-1.5B Base 法律咨询微调 - RTX 5090（32GB）版本。
+固定使用 Base 基座（Qwen2.5-1.5B，无 -Instruct），其余参数同 Qwen2.5_1.5B_legal_5090.py。
+默认全量 bf16 + batch=8 + gradient checkpointing 以适配 32GB。
+若仍 OOM，可启用 4bit：USE_4BIT=1 python -m ...
 
-固定使用「未做指令微调」的 Base 基座（Qwen2.5-1.5B），法律能力全靠微调数据。
-默认全量 bf16 + batch=8 + gradient checkpointing；若 OOM 可：USE_4BIT=1 python -m ...
-
-数据来源：
+数据来源同 Qwen2_5_(1.5B)_legal_hf.py：
 - dataset/【数据集】legal/qa_corpus.json
 - dataset/【数据集】legal/kg_crime.json
 """
@@ -40,7 +40,7 @@ from service.ai.finetuning.paths import (
     get_outputs_hf_dir,
 )
 
-# ---------- 路径配置（固定 Base）----------
+# ---------- 路径配置（仅基座改为 Base：Qwen2.5-1.5B，无 -Instruct）----------
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(_SCRIPT_DIR)))
 BASE_MODEL_PATH = os.path.join(_PROJECT_ROOT, "models", "Qwen", "Qwen2.5-1.5B")
@@ -53,10 +53,10 @@ _RUN_PARENT = get_run_parent_dir(get_finetuning_root(), model_name=LEGAL_RUN_NAM
 os.makedirs(_RUN_PARENT, exist_ok=True)
 LORA_SAVE_DIR = str(get_lora_dir(_RUN_PARENT))
 OUTPUT_DIR = str(get_outputs_hf_dir(_RUN_PARENT))
-print(f"Base 基座: {BASE_MODEL_PATH}")
 print(f"本次运行目录: {_RUN_PARENT} -> lora: {LORA_SAVE_DIR}, outputs_hf: {OUTPUT_DIR}")
 
-# ---------- 设备与精度 ----------
+# ---------- 设备与精度 -----------
+# 可通过环境变量 USE_4BIT=1 启用 4bit 量化，避免 OOM
 if torch.cuda.is_available():
     device = "cuda"
     use_4bit = os.environ.get("USE_4BIT", "").strip() in ("1", "true", "yes")
@@ -85,7 +85,7 @@ else:
     tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL_PATH, trust_remote_code=True)
 EOS_TOKEN = getattr(tokenizer, "eos_token", None) or "<|endoftext|>"
 
-# ---------- 加载模型 ----------
+# ---------- 加载模型 -----------
 if use_4bit:
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
@@ -154,14 +154,14 @@ def formatting_prompts_func(examples):
     return {"text": texts}
 
 
-MAX_TRAIN_SAMPLES = None  # 全量；调试可设为 500
+MAX_TRAIN_SAMPLES = None
 _seed = seed
 
 dataset = load_legal_data(
     max_question_len=400,
     max_answer_len=800,
     use_first_answer_only=True,
-    answer_choice="longest",
+    answer_choice="longest",  # 用多条回答中最长的一条，避免只学「提有利于孩子情况」等过短答案
 )
 if MAX_TRAIN_SAMPLES is not None:
     n = min(MAX_TRAIN_SAMPLES, len(dataset))
@@ -169,11 +169,11 @@ if MAX_TRAIN_SAMPLES is not None:
     print(f"截取 {len(dataset)} 条用于训练")
 dataset = dataset.map(formatting_prompts_func, batched=True)
 
-# ---------- 训练参数（5090：大 batch + gradient checkpointing）----------
+# ---------- 训练参数（5090 大显存：大 batch + 少 warmup）----------
 per_device_batch = 8
 gradient_accumulation_steps = 8
 warmup_steps = 2
-num_train_epochs = 2
+num_train_epochs = 1
 use_gradient_checkpointing = True
 optim_name = "adamw_8bit" if use_4bit else "adamw_torch"
 
@@ -192,7 +192,7 @@ sft_args = SFTConfig(
     lr_scheduler_type="linear",
     seed=seed,
     report_to="none",
-    save_strategy="no",
+    save_strategy="no",  # 暂时不保存 outputs_hf/checkpoint-*，只保留训练结束时的 LoRA
     gradient_checkpointing=use_gradient_checkpointing,
     dataset_text_field="text",
     max_length=max_seq_length,
@@ -208,7 +208,7 @@ trainer = SFTTrainer(
 )
 
 # ---------- 训练 ----------
-print("开始训练法律咨询 LoRA（Base 基座 / 5090 版）...")
+print("开始训练法律咨询 LoRA (5090 版)...")
 trainer.train()
 model.save_pretrained(LORA_SAVE_DIR)
 tokenizer.save_pretrained(LORA_SAVE_DIR)
