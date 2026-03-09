@@ -223,7 +223,11 @@ def load_encyclopedia(path, max_q=300, max_a=800):
             except json.JSONDecodeError:
                 continue
             qs = item.get("questions") or []
-            a  = (item.get("answers") or "").strip()
+            _ans = item.get("answers") or ""
+            if isinstance(_ans, list):
+                a = max(_ans, key=len).strip() if _ans else ""
+            else:
+                a = _ans.strip()
             # questions 是 list of list 或 list of str
             q = ""
             if qs:
