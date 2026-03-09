@@ -94,10 +94,10 @@ model, tokenizer = FastLanguageModel.from_pretrained(
 )
 print(f"设备: {next(model.parameters()).device}")
 
-# Qwen2 的 chat eos 是 <|im_end|>；unsloth 有时会把 eos_token 设成占位符 <EOS_TOKEN>，修正它
-if tokenizer.eos_token not in tokenizer.get_vocab():
-    tokenizer.eos_token = "<|im_end|>"
-    tokenizer.eos_token_id = tokenizer.convert_tokens_to_ids("<|im_end|>")
+# unsloth 加载 Qwen2 时 eos_token 会被设成占位符 <EOS_TOKEN>（该 token 虽在词表但不正确）
+# Qwen2-Instruct chat 格式的真正 eos 是 <|im_end|>，强制覆盖
+tokenizer.eos_token = "<|im_end|>"
+tokenizer.eos_token_id = tokenizer.convert_tokens_to_ids("<|im_end|>")
 print(f"eos_token: {tokenizer.eos_token!r} (id={tokenizer.eos_token_id})")
 
 # ── LoRA（通过 unsloth 接口）────────────────────────────────────────────────────
