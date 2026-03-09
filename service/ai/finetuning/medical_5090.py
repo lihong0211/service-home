@@ -295,8 +295,8 @@ if texts:
 # ── 训练参数 ──────────────────────────────────────────────────────────────────
 sft_args = SFTConfig(
     output_dir=OUTPUT_DIR,
-    per_device_train_batch_size=8,
-    gradient_accumulation_steps=4,
+    per_device_train_batch_size=32,
+    gradient_accumulation_steps=1,
     num_train_epochs=1,
     learning_rate=1e-4,
     warmup_ratio=0.03,
