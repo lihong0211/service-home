@@ -169,11 +169,12 @@ model = FastLanguageModel.get_peft_model(
 model.print_trainable_parameters()
 
 # ── System Prompt ──────────────────────────────────────────────────────────────
+# 强调：只答用户问的那一个问题，不编造案情、不答非所问，减少测评中的偏题/幻觉
 SYSTEM_PROMPT = (
     "你是一名专业法律顾问，专注于中国法律法规的咨询与解答。"
-    "请根据用户描述的问题，给出具体、准确、可操作的法律建议，"
+    "请严格针对用户提出的具体法律问题作答：只回答该问题本身，不要编造或假设案情，不要答非所问。"
     "在适用时引用相关法律条文（如《民法典》《劳动合同法》等）并说明处理流程。"
-    "回答应聚焦于法律层面；若问题超出法律范畴（如医疗、心理等），"
+    "回答应具体、准确、可操作，且聚焦于法律层面；若问题超出法律范畴（如医疗、心理等），"
     "请明确告知并建议用户寻求对应专业人士帮助。"
 )
 
@@ -183,7 +184,7 @@ _PAIR_QA = _DATA_DIR / "DISC-Law-SFT-Pair-QA-released.jsonl"
 _TRIPLET_QA = _DATA_DIR / "DISC-Law-SFT-Triplet-QA-released.jsonl"
 
 
-def load_disc_law_sft(max_input_len=800, max_output_len=1000):
+def load_disc_law_sft(max_input_len=800, max_output_len=1200):
     records = []
     for path, label in [(_PAIR_QA, "Pair-QA"), (_TRIPLET_QA, "Triplet-QA")]:
         if not path.is_file():
@@ -211,12 +212,15 @@ def load_disc_law_sft(max_input_len=800, max_output_len=1000):
     return records
 
 
-MAX_TRAIN_SAMPLES = None  # 试跑；正式全量训练设为 None
+MAX_TRAIN_SAMPLES = None  # 试跑可设整数；正式全量训练设为 None
 
-raw_data = load_disc_law_sft(max_input_len=800, max_output_len=1000)
+raw_data = load_disc_law_sft(max_input_len=800, max_output_len=1200)
 if MAX_TRAIN_SAMPLES is not None and MAX_TRAIN_SAMPLES < len(raw_data):
     random.seed(seed)
     raw_data = random.sample(raw_data, MAX_TRAIN_SAMPLES)
+# 每轮 epoch 打乱顺序，利于泛化
+random.seed(seed)
+random.shuffle(raw_data)
 print(f"总计: {len(raw_data):,} 条")
 
 
@@ -239,12 +243,16 @@ print(f"格式化后样本数: {len(dataset):,}")
 print(f"样本示例（前500字）:\n{texts[0][:500]}\n{'─'*60}")
 
 # ── 训练参数 ──────────────────────────────────────────────────────────────────
+# 全量数据建议：2–3 epoch、略降学习率减少过拟合、cosine 衰减
+NUM_EPOCHS = 2
+LEARNING_RATE = 5e-5
+
 sft_args = SFTConfig(
     output_dir=OUTPUT_DIR,
     per_device_train_batch_size=48,
     gradient_accumulation_steps=1,
-    num_train_epochs=1,  # 试跑；正式全量改为 2-3
-    learning_rate=1e-4,
+    num_train_epochs=NUM_EPOCHS,
+    learning_rate=LEARNING_RATE,
     warmup_ratio=0.03,
     bf16=True,
     fp16=False,
