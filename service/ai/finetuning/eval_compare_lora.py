@@ -41,7 +41,9 @@ FINETUNING_DIR = get_finetuning_root()
 # 医疗：数据路径 + 默认 LoRA 目录名
 MEDICAL_DATA_ROOT = PROJECT_ROOT / "dataset" / "【数据集】medical_hq"
 MEDICAL_HUATUO = MEDICAL_DATA_ROOT / "HuatuoGPT-sft-v1" / "HuatuoGPT_sft_data_v1.jsonl"
-MEDICAL_ENCYCLOPEDIA = MEDICAL_DATA_ROOT / "huatuo_encyclopedia_qa" / "train_datasets.jsonl"
+MEDICAL_ENCYCLOPEDIA = (
+    MEDICAL_DATA_ROOT / "huatuo_encyclopedia_qa" / "train_datasets.jsonl"
+)
 MEDICAL_LORA_MODEL_NAME = "Qwen2.5-1.5B-Instruct-medical-huatuo-5090"
 MEDICAL_SYSTEM_PROMPT = (
     "你是一名专业医疗健康助手，专注于常见病症、用药知识与健康管理咨询。"
@@ -69,6 +71,7 @@ BASE_MODEL_PATH = PROJECT_ROOT / "models" / "Qwen" / "Qwen2.5-1.5B-Instruct"
 
 def load_medical_samples(n: int):
     """医疗：HuatuoGPT-SFT + 百科，合并后取前 n 条。"""
+
     def _huatuo(path, max_q=600, max_a=800):
         if not path.is_file():
             return []
@@ -118,7 +121,11 @@ def load_medical_samples(n: int):
                 else:
                     a = (_ans if isinstance(_ans, str) else "").strip()
                 first = qs[0] if qs else None
-                q = (first[0] if isinstance(first, list) else first).strip() if first else ""
+                q = (
+                    (first[0] if isinstance(first, list) else first).strip()
+                    if first
+                    else ""
+                )
                 if not q or not a or len(q) < 5 or len(a) < 10:
                     continue
                 if len(q) > max_q or len(a) > max_a:
@@ -132,6 +139,7 @@ def load_medical_samples(n: int):
 
 def load_legal_samples(n: int):
     """法律：Pair-QA + Triplet-QA，合并后取前 n 条。"""
+
     def _load(path, max_q=800, max_a=1000):
         if not path.is_file():
             return []
@@ -172,7 +180,11 @@ def load_model_and_tokenizer(lora_type: str, lora_dir_override: str | None = Non
         elif lora_type == "legal" and (lora_base / "legal").is_dir():
             lora_path = str(lora_base / "legal")
         else:
-            model_name = MEDICAL_LORA_MODEL_NAME if lora_type == "medical" else LEGAL_LORA_MODEL_NAME
+            model_name = (
+                MEDICAL_LORA_MODEL_NAME
+                if lora_type == "medical"
+                else LEGAL_LORA_MODEL_NAME
+            )
             lora_dir = get_latest_lora_dir(_finetuning_root(), model_name=model_name)
             if not lora_dir or not lora_dir.is_dir():
                 hint = f"请将 LoRA 放到 {lora_base}/medical 或 {lora_base}/legal，或使用 --lora-dir 指定。"
@@ -197,7 +209,9 @@ def load_model_and_tokenizer(lora_type: str, lora_dir_override: str | None = Non
     return model, tokenizer
 
 
-def generate(model, tokenizer, question: str, system_prompt: str, max_new_tokens: int = 256):
+def generate(
+    model, tokenizer, question: str, system_prompt: str, max_new_tokens: int = 1000
+):
     """单条推理，与 medical_5090 / legal_5090 一致：chat template + generate。"""
     messages = [
         {"role": "system", "content": system_prompt},
@@ -219,23 +233,42 @@ def generate(model, tokenizer, question: str, system_prompt: str, max_new_tokens
             pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
             eos_token_id=tokenizer.eos_token_id,
         )
-    gen = out[0][enc["input_ids"].shape[1]:]
+    gen = out[0][enc["input_ids"].shape[1] :]
     return tokenizer.decode(gen, skip_special_tokens=True).strip()
 
 
 def main():
-    parser = argparse.ArgumentParser(description="LoRA 训练集前 N 条对比：标准答案 vs LoRA 生成")
-    parser.add_argument("--type", choices=("medical", "legal"), default="medical", help="medical 或 legal")
+    parser = argparse.ArgumentParser(
+        description="LoRA 训练集前 N 条对比：标准答案 vs LoRA 生成"
+    )
+    parser.add_argument(
+        "--type",
+        choices=("medical", "legal"),
+        default="medical",
+        help="medical 或 legal",
+    )
     parser.add_argument("--top", type=int, default=10, help="取训练集前几条")
-    parser.add_argument("--out", type=str, default=None, help="输出文件路径，默认 finetuning/eval_compare_{type}_{date}.md")
-    parser.add_argument("--lora-dir", type=str, default=None, help="LoRA 目录路径（不指定则用 lora/ 下最新同名目录）")
+    parser.add_argument(
+        "--out",
+        type=str,
+        default=None,
+        help="输出文件路径，默认 finetuning/eval_compare_{type}_{date}.md",
+    )
+    parser.add_argument(
+        "--lora-dir",
+        type=str,
+        default=None,
+        help="LoRA 目录路径（不指定则用 lora/ 下最新同名目录）",
+    )
     args = parser.parse_args()
 
     lora_dir_override = args.lora_dir or os.environ.get("LORA_PATH")
 
     lora_type = args.type
     top_n = args.top
-    system_prompt = MEDICAL_SYSTEM_PROMPT if lora_type == "medical" else LEGAL_SYSTEM_PROMPT
+    system_prompt = (
+        MEDICAL_SYSTEM_PROMPT if lora_type == "medical" else LEGAL_SYSTEM_PROMPT
+    )
 
     if lora_type == "medical":
         samples = load_medical_samples(top_n)
@@ -247,14 +280,18 @@ def main():
         sys.exit(1)
     print(f"加载 {len(samples)} 条样本，开始加载模型并推理...")
 
-    model, tokenizer = load_model_and_tokenizer(lora_type, lora_dir_override=lora_dir_override)
+    model, tokenizer = load_model_and_tokenizer(
+        lora_type, lora_dir_override=lora_dir_override
+    )
 
     results = []
     for i, s in enumerate(samples):
         q = s["question"]
         ref = s["answer"]
         pred = generate(model, tokenizer, q, system_prompt)
-        results.append({"idx": i + 1, "question": q, "reference": ref, "lora_answer": pred})
+        results.append(
+            {"idx": i + 1, "question": q, "reference": ref, "lora_answer": pred}
+        )
         print(f"  [{i+1}/{len(samples)}] 完成")
 
     # 写入 finetuning 目录
@@ -264,7 +301,10 @@ def main():
         if not out_path.is_absolute():
             out_path = out_dir / out_path
     else:
-        out_path = out_dir / f"eval_compare_{lora_type}_{datetime.now().strftime('%Y%m%d_%H%M')}.md"
+        out_path = (
+            out_dir
+            / f"eval_compare_{lora_type}_{datetime.now().strftime('%Y%m%d_%H%M')}.md"
+        )
 
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(f"# LoRA 对比评估：{lora_type}（训练集前 {top_n} 条）\n\n")

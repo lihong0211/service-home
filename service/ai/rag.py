@@ -6,9 +6,10 @@ RAG 模块：基于知识库的检索与问答。
 - 返回前后状态供前端展示
 """
 
-from flask import request, jsonify
+from fastapi import Request
 
 from service.ai.vector_db import client, search_in_db
+from utils.http_body import read_json_optional
 from service.ai.rag_enhance import query_rewrite, rerank_documents
 from model.ai import VectorDb, KnowledgeBase
 
@@ -168,7 +169,7 @@ def rag_chat(
     return out
 
 
-def rag_ask_api():
+async def rag_ask_api(request: Request):
     """
     基于知识库的 RAG 问答。
     POST body:
@@ -179,7 +180,7 @@ def rag_ask_api():
       - enable_rerank (bool): 是否启用 Rerank，返回 rerank 前后状态
       - conversation_history (str): 对话历史，供 Query 改写使用
     """
-    data = request.get_json() or {}
+    data = await read_json_optional(request) or {}
     kb_id = data.get("knowledge_base_id") or data.get("kb_id") or data.get("db_id")
     kb_name = (
         data.get("knowledge_base_name")
@@ -225,17 +226,17 @@ def rag_ask_api():
         enable_rerank=enable_rerank,
         conversation_history=conversation_history,
     )
-    return jsonify({"code": 0, "msg": "ok", "data": out})
+    return {"code": 0, "msg": "ok", "data": out}
 
 
-def rag_search_api():
+async def rag_search_api(request: Request):
     """
     在指定知识库中做向量检索（不调用大模型）。
     POST body: { "knowledge_base_id"/"kb_name" 或 "knowledge_base_name", "query", "top_k": 3, 
                  "enable_query_rewrite": bool, "enable_rerank": bool, "conversation_history": str }
     """
     from service.ai.rag_enhance import query_rewrite, rerank_documents
-    data = request.get_json() or {}
+    data = await read_json_optional(request) or {}
     kb_id = data.get("knowledge_base_id") or data.get("kb_id") or data.get("db_id")
     kb_name = (
         data.get("knowledge_base_name")
@@ -319,9 +320,7 @@ def rag_search_api():
         err_msg = str(e)
         if "timeout" in err_msg.lower() or "timed out" in err_msg.lower():
             return (
-                jsonify(
-                    {"code": 504, "msg": "检索超时，请稍后重试", "detail": err_msg}
-                ),
+                {"code": 504, "msg": "检索超时，请稍后重试", "detail": err_msg},
                 504,
             )
         raise
@@ -337,7 +336,7 @@ def rag_search_api():
         if rr.get("after"):
             results = rr["after"]
     
-    return jsonify({
+    return {
         "code": 0,
         "msg": "ok",
         "data": {
@@ -350,4 +349,4 @@ def rag_search_api():
                 for i, r in enumerate(results)
             ],
         },
-    })
+    }

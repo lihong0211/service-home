@@ -11,7 +11,11 @@ import json
 import uuid
 import shutil
 import subprocess
-from flask import request, jsonify, send_file, Response
+
+from fastapi import Request
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
+
+from utils.http_body import query_dict, write_upload_to_disk
 
 # 存储根目录，可与 data/vector_dbs 同级
 def _upload_root():
@@ -92,22 +96,23 @@ def _ensure_upload_dirs():
     return root
 
 
-def upload_file_api():
+async def upload_file_api(request: Request):
     """
     POST /ai/files/upload
     multipart: file（必填）, kb_id（可选，知识库 id，用于分子目录与列表筛选）
     返回：{ code, msg, data: { id, name, size, url, preview_url } }
     不处理上传进度，仅返回完成状态。
     """
-    f = request.files.get("file")
-    if not f or not f.filename:
+    form = await request.form()
+    f = form.get("file")
+    if not f or not getattr(f, "filename", None):
         raise ValueError("请上传文件（字段 file）")
     name = (f.filename or "").strip()
     ext = os.path.splitext(name)[1].lower()
     if ext not in ALLOWED_EXT:
         raise ValueError(f"不支持的文件类型，仅支持: {', '.join(sorted(ALLOWED_EXT))}")
 
-    kb_id = request.form.get("kb_id")
+    kb_id = form.get("kb_id")
     if kb_id is not None and kb_id != "":
         try:
             kb_id = str(int(kb_id))
@@ -126,7 +131,7 @@ def upload_file_api():
     abs_path = os.path.join(root, rel_path)
 
     try:
-        f.save(abs_path)
+        await write_upload_to_disk(f, abs_path)
         size = os.path.getsize(abs_path)
     except Exception as e:
         raise RuntimeError(f"保存文件失败: {e}") from e
@@ -144,7 +149,7 @@ def upload_file_api():
     # 预览 URL：使用相对 API 路径，前端可拼 baseURL
     preview_url = f"/ai/files/{file_id}/preview"
     url = preview_url
-    return jsonify({
+    return {
         "code": 0,
         "msg": "ok",
         "data": {
@@ -154,15 +159,16 @@ def upload_file_api():
             "url": url,
             "preview_url": preview_url,
         },
-    })
+    }
 
 
-def list_files_api():
+async def list_files_api(request: Request):
     """
     GET /ai/files/list?kbId=xxx
     返回：{ code, msg, data: { list: [ { id, name, size, url, preview_url } ] } }
     """
-    kb_id = request.args.get("kbId") or request.args.get("kb_id")
+    q = query_dict(request)
+    kb_id = q.get("kbId") or q.get("kb_id")
     if kb_id is not None and kb_id != "":
         try:
             kb_id = str(int(kb_id))
@@ -185,7 +191,7 @@ def list_files_api():
         })
     # 按创建时间倒序
     list_.sort(key=lambda x: manifest.get(x["id"], {}).get("created_at", ""), reverse=True)
-    return jsonify({"code": 0, "msg": "ok", "data": {"list": list_}})
+    return {"code": 0, "msg": "ok", "data": {"list": list_}}
 
 
 # macOS: brew install --cask libreoffice 装到 /Applications，命令为 soffice。
@@ -430,9 +436,8 @@ def serve_file_preview(abs_path: str, file_name: str, cache_key: str = None, cac
                 if ext == ".docx":
                     try:
                         html_content = _docx_to_html_preview(abs_path)
-                        return Response(
-                            html_content,
-                            mimetype="text/html; charset=utf-8",
+                        return HTMLResponse(
+                            content=html_content,
                             headers={"X-Preview-Fallback": "html"},
                         )
                     except Exception:
@@ -440,46 +445,51 @@ def serve_file_preview(abs_path: str, file_name: str, cache_key: str = None, cac
                 if ext == ".pptx":
                     try:
                         html_content = _pptx_to_html_preview(abs_path)
-                        return Response(
-                            html_content,
-                            mimetype="text/html; charset=utf-8",
+                        return HTMLResponse(
+                            content=html_content,
                             headers={"X-Preview-Fallback": "html"},
                         )
                     except Exception:
                         pass
                 # Excel 无 LibreOffice 时也改为下载（不提供 HTML 降级，保持与 PDF 一致）
                 # .doc / .ppt / .xls / .xlsx 或解析失败：改为下载
-                resp = send_file(abs_path, as_attachment=True, download_name=file_name or "file")
-                resp.headers["X-Preview-Fallback"] = "download"
-                resp.headers["X-Preview-Message"] = "本机未安装 LibreOffice，无法在线预览该格式，已改为下载。安装后可预览: brew install --cask libreoffice"
-                return resp
-        return send_file(
+                return FileResponse(
+                    abs_path,
+                    filename=file_name or "file",
+                    headers={
+                        "X-Preview-Fallback": "download",
+                        "X-Preview-Message": "本机未安装 LibreOffice，无法在线预览该格式，已改为下载。安装后可预览: brew install --cask libreoffice",
+                    },
+                )
+        return FileResponse(
             cached_pdf,
-            mimetype="application/pdf",
-            as_attachment=False,
-            download_name=os.path.splitext(file_name or "file")[0] + ".pdf",
+            media_type="application/pdf",
+            content_disposition_type="inline",
         )
     if ext == ".pdf":
-        return send_file(abs_path, mimetype="application/pdf", as_attachment=False)
+        return FileResponse(
+            abs_path,
+            media_type="application/pdf",
+            content_disposition_type="inline",
+        )
     if ext in (".txt", ".md"):
         try:
             with open(abs_path, "r", encoding="utf-8", errors="ignore") as f:
                 text = f.read()
         except Exception as e:
             raise RuntimeError("读取文件失败") from e
-        return Response(text, mimetype="text/plain; charset=utf-8")
+        return PlainTextResponse(text)
     # 图片：以内联方式返回，便于前端 <img src="..."> 或新标签页直接显示
     if ext in IMAGE_PREVIEW_EXT:
-        return send_file(
+        return FileResponse(
             abs_path,
-            mimetype=IMAGE_PREVIEW_EXT[ext],
-            as_attachment=False,
-            download_name=file_name or "file",
+            media_type=IMAGE_PREVIEW_EXT[ext],
+            content_disposition_type="inline",
         )
-    return send_file(abs_path, as_attachment=True, download_name=file_name or "file")
+    return FileResponse(abs_path, filename=file_name or "file")
 
 
-def preview_file_api(file_id: str):
+async def preview_file_api(request: Request, file_id: str):
     """
     GET /ai/files/<file_id>/preview
     直接返回文件流（Content-Type 正确）；DOCX/PPT/PPTX 转为 PDF 后返回（需本机安装 LibreOffice）。

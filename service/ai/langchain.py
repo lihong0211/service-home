@@ -23,6 +23,11 @@ from typing import Annotated, TypedDict
 import dashscope
 import requests
 
+from fastapi import Request
+from fastapi.responses import StreamingResponse
+
+from utils.http_body import query_dict, read_json_optional
+
 # LangGraph 图与状态
 from langgraph.graph import END, StateGraph
 from langgraph.checkpoint.memory import MemorySaver
@@ -435,8 +440,6 @@ def _classify_intent(state: RouterState) -> dict:
     q = query.lower()
     if "天气" in q:
         intent = "weather"
-    elif any(k in q for k in ("股票", "a股", "股市", "行情", "大盘", "涨停", "跌停", "沪指", "深指")):
-        intent = "stock"
     elif "新闻" in q:
         intent = "news"
     else:
@@ -480,50 +483,6 @@ def _weather_handler(state: RouterState) -> dict:
         response = f"天气查询失败：{data['error']}"
     else:
         response = f"天气查询失败（adcode={adcode} 未匹配）：{json.dumps(data, ensure_ascii=False)}"
-    return {"response": response}
-
-
-def _stock_handler(state: RouterState) -> dict:
-    query = state.get("query", "")
-    symbol = _call_llm(
-        f"从这句话中提取股票代码或公司名称（A股六位代码优先），只返回股票代码或名称，识别不到则返回贵州茅台：{query}",
-        system="只输出股票代码或股票名称，不要其他内容。",
-    ).strip()
-    print(f"📈 查询股票: {symbol}")
-    # 东方财富接口经代理常被断开，请求时临时绕过代理
-    _saved_proxy = {
-        k: os.environ.pop(k, None)
-        for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy")
-    }
-    try:
-        import akshare as ak
-        if symbol.isdigit() and len(symbol) == 6:
-            # 直接用六位代码
-            df = ak.stock_individual_info_em(symbol=symbol)
-            info = dict(zip(df.iloc[:, 0], df.iloc[:, 1]))
-            response = f"📈 股票 {symbol}：{json.dumps(info, ensure_ascii=False)[:200]}"
-        else:
-            # 按名称在实时行情里搜索
-            spot_df = ak.stock_zh_a_spot_em()
-            matched = spot_df[spot_df["名称"].str.contains(symbol, na=False)]
-            if matched.empty:
-                matched = spot_df[spot_df["代码"].str.contains(symbol, na=False)]
-            if not matched.empty:
-                row = matched.iloc[0]
-                response = (
-                    f"📈 {row.get('名称', '')}（{row.get('代码', '')}）"
-                    f"最新价：{row.get('最新价', '')}，"
-                    f"涨跌幅：{row.get('涨跌幅', '')}%，"
-                    f"成交量：{row.get('成交量', '')}手"
-                )
-            else:
-                response = f"未找到匹配股票：{symbol}"
-    except Exception as e:
-        response = f"股票查询失败：{e}"
-    finally:
-        for k, v in _saved_proxy.items():
-            if v is not None:
-                os.environ[k] = v
     return {"response": response}
 
 
@@ -589,11 +548,10 @@ def _chat_handler(state: RouterState) -> dict:
 
 
 def build_router_graph():
-    """条件路由：classify → weather | stock | news | chat → END。"""
+    """条件路由：classify → weather | news | chat → END。（已移除股票查询）"""
     builder = StateGraph(RouterState)
     builder.add_node("classify", _classify_intent)
     builder.add_node("weather", _weather_handler)
-    builder.add_node("stock", _stock_handler)
     builder.add_node("news", _news_handler)
     builder.add_node("chat", _chat_handler)
 
@@ -601,9 +559,9 @@ def build_router_graph():
     builder.add_conditional_edges(
         "classify",
         lambda s: s["intent"],
-        {"weather": "weather", "stock": "stock", "news": "news", "chat": "chat"},
+        {"weather": "weather", "news": "news", "chat": "chat"},
     )
-    for name in ["weather", "stock", "news", "chat"]:
+    for name in ["weather", "news", "chat"]:
         builder.add_edge(name, END)
 
     return builder.compile()
@@ -616,7 +574,7 @@ def demo_router():
     try:
         graph.get_graph().print_ascii()
     except Exception:
-        print("  (图结构: classify → weather|stock|news|chat → END)")
+        print("  (图结构: classify → weather|news|chat → END)")
     print()
     for q in ["今天天气怎么样？", "有什么新闻？", "随便聊聊"]:
         out = graph.invoke({"query": q, "intent": "", "response": ""})
@@ -638,7 +596,6 @@ NODE_ICONS = {
     "classify": "🎯",
     "aggregate": "📊",
     "weather": "☀️",
-    "stock": "📈",
     "news": "📰",
     "chat": "💭",
     "sentiment": "😊",   # 情感分析
@@ -655,7 +612,6 @@ NODE_DISPLAY = {
     "__end__": {"name": "输出", "type": "output", "icon": "📢", "description": "出口"},
     "classify": {"name": "意图分类", "type": "llm", "description": "分析用户意图"},
     "weather": {"name": "天气", "type": "tool", "description": "天气查询"},
-    "stock": {"name": "股票", "type": "tool", "description": "股票信息"},
     "news": {"name": "新闻", "type": "tool", "description": "新闻摘要"},
     "chat": {"name": "闲聊", "type": "llm", "description": "通用对话"},
     "think": {"name": "思考", "type": "llm", "description": "迭代思考"},
@@ -862,6 +818,10 @@ def _enrich_step_for_frontend(node_id: str, output: dict, current_state: dict) -
     elif node_id == "respond" and isinstance(output, dict):
         extra["response"] = output.get("response", "")
         extra["label"] = "最终回答"
+    # router 图：weather/news/chat 节点也带 response，前端可直接从 step 或 finalState 取
+    elif node_id in ("weather", "news", "chat") and isinstance(output, dict):
+        extra["response"] = output.get("response", "")
+        extra["label"] = {"weather": "天气", "news": "新闻", "chat": "闲聊"}.get(node_id, node_id)
     return extra
 
 
@@ -961,60 +921,70 @@ def run_graph_and_collect_steps(graph_name: str, input_state: dict | None = None
     schema = graph_to_schema(graph)
     steps = run_result["steps"]
     execution_order = run_result["executionOrder"]
-    total = run_result.get("totalSteps", len(steps))
+    total_steps = run_result.get("totalSteps", len(steps))
+    nodes = schema["nodes"]
+    total_nodes = len(nodes)
+    # 执行监控用：总节点数、已完成步数、进度百分比；对话历史用 finalState.response
+    completed_steps = len(steps)
+    execution_progress = round((completed_steps / total_nodes * 100), 1) if total_nodes else 0
     return {
         "graphData": {
-            "nodes": schema["nodes"],
+            "nodes": nodes,
             "edges": schema["edges"],
             "executionOrder": execution_order,
         },
         "steps": steps,
         "finalState": run_result["finalState"],
         "executionOrder": execution_order,
-        "totalSteps": total,
+        "totalSteps": total_steps,
+        "totalNodes": total_nodes,
+        "completedSteps": completed_steps,
+        "executionProgress": execution_progress,
+        "response": run_result["finalState"].get("response", ""),
     }
 
 
 # ---------------------------------------------------------------------------
-# Flask 视图：供 routes/ai 注册 GET/POST
+# HTTP 视图：供 routes/ai 注册 GET/POST
 # ---------------------------------------------------------------------------
 
 
-def langgraph_graph_api():
+async def langgraph_graph_api(request: Request):
     """GET /ai/langgraph/graph?name=router 返回图结构，供前端 3D 可视化（GraphData）。"""
-    from flask import request, jsonify
-
-    name = request.args.get("name") or "router"
+    q = query_dict(request)
+    name = q.get("name") or "router"
     schema = get_graph_schema(name)
     if schema is None:
         return (
-            jsonify(
-                {
-                    "code": 400,
-                    "msg": f"未知图: {name}",
-                    "data": {"allowed": list_graph_names()},
-                }
-            ),
+            {
+                "code": 400,
+                "msg": f"未知图: {name}",
+                "data": {"allowed": list_graph_names()},
+            },
             400,
         )
-    return jsonify({"code": 0, "msg": "ok", "data": schema})
+    return {"code": 0, "msg": "ok", "data": schema}
 
 
-def langgraph_run_api():
+async def langgraph_run_api(request: Request):
     """
     POST /ai/langgraph/run 执行图并返回步骤与最终状态，供前端按真实执行顺序驱动 3D 动画。
 
-    router / loop / parallel 均存在「先答案、后流程」问题：非流式时一次返回 steps+finalState，
-    前端若先渲染 finalState.response 再播步骤动画，就会看到答案比流程快。
+    非流式（默认）：响应体为 JSON，结构为：
+      { "code": 0, "msg": "ok", "data": {
+          "graphData": { "nodes", "edges", "executionOrder" },
+          "steps": [ { "stepIndex", "nodeId", "output", "response?", "label?" }, ... ],
+          "finalState": { "query", "intent", "response", ... },
+          "totalNodes": 7, "completedSteps": 2, "executionProgress": 28.6,
+          "response": "最终回复正文（与 finalState.response 一致，便于直接展示对话）"
+        }}
+    前端「执行监控」建议：总节点 = data.totalNodes，已完成 = data.completedSteps，执行进度 = data.executionProgress%；
+    对话历史：取 data.response 或 data.finalState.response 展示。
 
-    解决：请求体传 "stream": true，改为 SSE 流式：
-    - 先依次推送 type=step（每步 nodeId、duration_ms、output 等）
-    - 最后推送 type=done（含 finalState、totalSteps、steps）
-    前端应：按 step 更新流程动画，仅在收到 type=done 后再展示 finalState.response。
+    流式（body.stream=true）：SSE，先 type=init（含 graphData、totalNodes），再 type=step 若干次，最后 type=done
+    （含 finalState、steps、totalNodes、completedSteps、executionProgress、response）；前端按 step 播动画，收到 done 后展示 response。
     """
-    from flask import request, jsonify, Response, stream_with_context
-
-    body = request.get_json() or {}
+    body = (await read_json_optional(request)) or {}
     graph_name = body.get("graph") or "router"
     stream = body.get("stream", False)
     input_state = body.get("input")
@@ -1030,35 +1000,50 @@ def langgraph_run_api():
 
     builder_fn = GRAPH_BUILDERS.get(graph_name)
     if not builder_fn:
-        return jsonify({"code": 400, "msg": f"未知图: {graph_name}", "data": {"allowed": list(GRAPH_BUILDERS.keys())}}), 400
+        return (
+            {"code": 400, "msg": f"未知图: {graph_name}", "data": {"allowed": list(GRAPH_BUILDERS.keys())}},
+            400,
+        )
     graph = builder_fn()
     default = DEFAULT_INPUTS.get(graph_name, {})
     state = {**default, **input_state} if input_state else default.copy()
 
     if stream:
         schema = graph_to_schema(graph)
+        total_nodes = len(schema["nodes"])
         def gen():
             try:
                 # 先发 graphData，方便前端画图
-                yield f"data: {json.dumps({'type': 'init', 'graphData': {'nodes': schema['nodes'], 'edges': schema['edges']}}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'init', 'graphData': {'nodes': schema['nodes'], 'edges': schema['edges']}, 'totalNodes': total_nodes}, ensure_ascii=False)}\n\n"
                 for event_type, payload in run_graph_stream_yield_events(graph, state):
                     if event_type == "step":
                         yield f"data: {json.dumps({'type': 'step', 'step': payload}, ensure_ascii=False)}\n\n"
                     else:
-                        yield f"data: {json.dumps({'type': 'done', **payload}, ensure_ascii=False)}\n\n"
+                        # done：补充执行监控与对话用字段，便于前端显示进度和 finalState.response
+                        steps_list = payload.get("steps", [])
+                        completed = len(steps_list)
+                        progress = round((completed / total_nodes * 100), 1) if total_nodes else 0
+                        done_data = {
+                            **payload,
+                            "totalNodes": total_nodes,
+                            "completedSteps": completed,
+                            "executionProgress": progress,
+                            "response": (payload.get("finalState") or {}).get("response", ""),
+                        }
+                        yield f"data: {json.dumps({'type': 'done', **done_data}, ensure_ascii=False)}\n\n"
                 yield "data: [DONE]\n\n"
             except Exception as e:
                 yield f"data: {json.dumps({'type': 'error', 'error': str(e)}, ensure_ascii=False)}\n\n"
-        return Response(
-            stream_with_context(gen()),
-            mimetype="text/event-stream; charset=utf-8",
+        return StreamingResponse(
+            gen(),
+            media_type="text/event-stream; charset=utf-8",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
         )
 
     out = run_graph_and_collect_steps(graph_name, input_state)
     if out.get("error"):
-        return jsonify({"code": 400, "msg": out["error"], "data": out}), 400
-    return jsonify({"code": 0, "msg": "ok", "data": out})
+        return ({"code": 400, "msg": out["error"], "data": out}, 400)
+    return {"code": 0, "msg": "ok", "data": out}
 
 
 # ---------------------------------------------------------------------------

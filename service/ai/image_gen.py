@@ -8,7 +8,10 @@ import tempfile
 from io import BytesIO
 
 import torch
-from flask import request, send_file, jsonify
+from fastapi import Request
+from fastapi.responses import JSONResponse, StreamingResponse
+
+from utils.http_body import read_json_optional, read_form_optional, is_json_request
 
 _image_pipe = None
 DEVICE = torch.device("mps")
@@ -30,17 +33,23 @@ def _get_pipeline():
     return _image_pipe
 
 
-def generate():
+async def generate(request: Request):
     """
     文生图接口：prompt 必填，其余可选；返回 image/png。
     """
-    data = request.get_json(silent=True) or {}
-    prompt = data.get("prompt") or (request.form and request.form.get("prompt"))
+    if is_json_request(request):
+        data = await read_json_optional(request) or {}
+        form = {}
+    else:
+        form = await read_form_optional(request)
+        data = {}
+
+    prompt = data.get("prompt") or form.get("prompt")
     if not prompt or not str(prompt).strip():
-        return jsonify({"code": 400, "msg": "Missing prompt"}), 400
+        return ({"code": 400, "msg": "Missing prompt"}, 400)
 
     prompt = str(prompt).strip()
-    seed = data.get("seed")
+    seed = data.get("seed") if data else form.get("seed")
     if seed is not None:
         try:
             seed = int(seed)
@@ -72,11 +81,10 @@ def generate():
         except Exception:
             pass
         buf.seek(0)
-        return send_file(
+        return StreamingResponse(
             buf,
-            mimetype="image/png",
-            as_attachment=False,
-            download_name="image.png",
+            media_type="image/png",
+            headers={"Content-Disposition": 'inline; filename="image.png"'},
         )
     except Exception as e:
         if tmp and os.path.exists(tmp):
@@ -84,4 +92,4 @@ def generate():
                 os.unlink(tmp)
             except Exception:
                 pass
-        return jsonify({"code": 500, "msg": str(e)}), 500
+        return JSONResponse(content={"code": 500, "msg": str(e)}, status_code=500)

@@ -1,6 +1,6 @@
 # service/ai 技术文档总览
 
-> 生成日期：2026-02-26  
+> 生成日期：2026-02-26 | 更新：2026-03-11  
 > 对应代码：`service/ai/`（全模块）
 
 ---
@@ -44,13 +44,12 @@
 | 01 | [向量库层](./01_vector_db.md) | `vector_db.py` | FAISS IndexIDMap、双存储同步、增量 Embedding |
 | 02 | [RAG 检索增强生成层](./02_rag.md) | `rag.py`、`rag_enhance.py` | Query 改写（CASEA）、DashScope Rerank、流水线可观测性 |
 | 03 | [知识库管理层](./03_knowledge_base.md) | `knowledge.py` | 多格式文档解析、分段策略、上传与向量化解耦 |
-| 04 | [LangGraph 多 Agent 工作流层](./04_agent.md) | `agent/` | StateGraph、三种 Agent 范式、动态图可视化 |
+| 04 | [LangGraph 多 Agent 工作流层](./04_agent.md) | `agent/`（含医生智能体 `agent_doctor.py`） | StateGraph、四种 Agent 范式、医生多轮问诊、动态图可视化 |
 | 05 | [A2A 协议层](./05_a2a.md) | `a2a/` | Google A2A Protocol、Task 生命周期、多 Agent 编排 |
 | 06 | [MCP 工具集层](./06_mcp.md) | `mcp/` | Model Context Protocol、ChatPPT、SSL 重试 |
 | 07 | [对话能力层](./07_chat.md) | `chat.py`、`ollama_chat.py` | 本地 Ollama、流式 SSE、OCR 视觉去重 |
 | 08 | [工具能力层](./08_tools.md) | `function_call.py`、`text2sql.py`、`tts.py`、`stt.py`、`image_gen.py` | Function Calling、Text2SQL、Edge-TTS、Whisper、SDXL |
 | 09 | [模型微调实验层](./09_finetuning.md) | `finetuning/` | LoRA/QLoRA、GRPO/R1、Unsloth、视觉微调 |
-| 10 | [前端对接文档](./10_frontend_api.md) | `routes/ai.py`、`agent/`、`langchain.py` | Agent/LangGraph 接口、状态与步骤、SSE 流式 |
 
 ---
 
@@ -120,5 +119,3 @@ MCP 工具集层 (06)
 **我想了解如何在本地跑 LLM 对话** → [07 对话能力层](./07_chat.md)
 
 **我想了解如何微调一个领域专用模型** → [09 微调实验层](./09_finetuning.md)
-
-**前端对接 Agent / LangGraph（状态、步骤、流式）** → [10 前端对接文档](./10_frontend_api.md)

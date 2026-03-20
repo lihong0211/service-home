@@ -10,6 +10,11 @@ from typing import Any, Iterator, List, Optional
 import dashscope
 from qwen_agent.agents import Assistant
 
+from fastapi import Request
+from fastapi.responses import StreamingResponse
+
+from utils.http_body import read_json_optional
+
 dashscope.api_key = os.getenv("DASHSCOPE_API_KEY")
 AMAP_MAPS_API_KEY = os.getenv("AMAP_MAPS_API_KEY")
 
@@ -192,36 +197,32 @@ def run_mcp_gaode_chat_stream(messages: List[dict]) -> Iterator[str]:
         yield send({"event": "error", "data": {"message": str(e)}})
 
 
-# ---------- Flask 视图（供 routes 直接注册，无需在 routes 里再写 def）----------
+# ---------- HTTP 视图（供 routes 注册）----------
 
 
-def mcp_gaode_info_api():
-    from flask import jsonify
-
+async def mcp_gaode_info_api(request: Request):
     try:
         data = get_mcp_gaode_info()
-        return jsonify({"code": 0, "msg": "ok", "data": data})
+        return {"code": 0, "msg": "ok", "data": data}
     except Exception as e:
-        return jsonify({"code": 500, "msg": str(e), "data": None}), 500
+        return ({"code": 500, "msg": str(e), "data": None}, 500)
 
 
-def mcp_gaode_chat_stream_api():
-    from flask import request, jsonify, Response, stream_with_context
-
-    body = request.get_json() or {}
+async def mcp_gaode_chat_stream_api(request: Request):
+    body = (await read_json_optional(request)) or {}
     messages = body.get("messages", [])
     if not messages:
-        return jsonify({"code": 400, "msg": "请提供 messages", "data": None}), 400
+        return ({"code": 400, "msg": "请提供 messages", "data": None}, 400)
     try:
 
         def generate():
             for line in run_mcp_gaode_chat_stream(messages):
                 yield line
 
-        return Response(
-            stream_with_context(generate()),
-            mimetype="application/x-ndjson",
+        return StreamingResponse(
+            generate(),
+            media_type="application/x-ndjson",
             headers={"X-Accel-Buffering": "no"},
         )
     except Exception as e:
-        return jsonify({"code": 500, "msg": str(e), "data": None}), 500
+        return ({"code": 500, "msg": str(e), "data": None}, 500)

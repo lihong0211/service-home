@@ -1,80 +1,18 @@
 # app/app.py
 """
-应用初始化
+应用包入口：导出 FastAPI `app` 与 `db`（供 model / service 使用 `from app.app import db`）。
+加载顺序：先导入 database（提供 db），再 `create_app()`，避免 routes 反向 import 时循环依赖。
 """
 import sys
 from pathlib import Path
 
-# 保证以 app/app.py 直接运行时，项目根目录在 sys.path 中
 _root = Path(__file__).resolve().parent.parent
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
-from urllib.parse import quote_plus
-from flask import Flask
-from flask_sqlalchemy import SQLAlchemy
-from config.db import DB_CONFIG, DB_PDD_CONFIG, DB_AI_CONFIG
+from app.database import Base, SessionLocal, db, engine, engines, get_db
+from app.factory import create_app
 
-app = Flask(__name__)
+app = create_app()
 
-# 配置主数据库
-# 验证配置不为空
-if not DB_CONFIG.get("user"):
-    raise ValueError("DB_USER 未配置，请在 .env 文件中设置 DB_USER")
-if not DB_CONFIG.get("password"):
-    raise ValueError("DB_PASSWORD 未配置，请在 .env 文件中设置 DB_PASSWORD")
-
-# 调试：打印配置信息（不打印完整密码）
-print(f"[DB Config] user={DB_CONFIG['user']}, host={DB_CONFIG['host']}, database={DB_CONFIG['database']}, password_set={bool(DB_CONFIG['password'])}")
-
-encoded_password = quote_plus(DB_CONFIG["password"])
-mysql_url = (
-    f"mysql+pymysql://{DB_CONFIG['user']}:{encoded_password}"
-    f"@{DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['database']}"
-    f"?charset={DB_CONFIG.get('charset', 'utf8mb4')}"
-)
-
-# 调试：打印连接字符串（隐藏密码部分）
-debug_url = mysql_url.split('@')[0].split(':')[0] + ':***@' + '@'.join(mysql_url.split('@')[1:])
-print(f"[DB Config] Connection URL: {debug_url}")
-
-app.config["SQLALCHEMY_DATABASE_URI"] = mysql_url
-
-# 配置 PDD 数据库
-encoded_pdd_password = quote_plus(DB_PDD_CONFIG["password"])
-pdd_mysql_url = (
-    f"mysql+pymysql://{DB_PDD_CONFIG['user']}:{encoded_pdd_password}"
-    f"@{DB_PDD_CONFIG['host']}:{DB_PDD_CONFIG['port']}/{DB_PDD_CONFIG['database']}"
-    f"?charset={DB_PDD_CONFIG.get('charset', 'utf8mb4')}"
-)
-
-# 配置 AI 模块数据库（仅 database 不同，默认 ai）
-encoded_ai_password = quote_plus(DB_AI_CONFIG["password"])
-ai_mysql_url = (
-    f"mysql+pymysql://{DB_AI_CONFIG['user']}:{encoded_ai_password}"
-    f"@{DB_AI_CONFIG['host']}:{DB_AI_CONFIG['port']}/{DB_AI_CONFIG['database']}"
-    f"?charset={DB_AI_CONFIG.get('charset', 'utf8mb4')}"
-)
-app.config["SQLALCHEMY_BINDS"] = {"pdd": pdd_mysql_url, "ai": ai_mysql_url}
-app.config["SQLALCHEMY_POOL_SIZE"] = 50
-app.config["SQLALCHEMY_POOL_TIMEOUT"] = 30
-app.config["SQLALCHEMY_MAX_OVERFLOW"] = 200
-app.config["SQLALCHEMY_POOL_RECYCLE"] = 3600
-app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
-    "pool_size": 50,
-    "max_overflow": 200,
-    "pool_recycle": 3600,
-    "pool_timeout": 30,
-    "echo": False,
-    "pool_pre_ping": True,
-}
-app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
-app.config["SQLALCHEMY_ECHO"] = False
-app.config["JSONIFY_MIMETYPE"] = "application/json;charset=utf-8"
-app.config["JSON_AS_ASCII"] = False
-# 知识库上传可能包含大文件（PDF、PPT、DOCX 等），放宽限制（默认约 1MB）
-# 设置为 500MB，足够处理大多数文档上传场景
-app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024
-
-# 初始化数据库
-db = SQLAlchemy(app)
+__all__ = ["app", "db", "get_db", "Base", "engine", "engines", "SessionLocal"]

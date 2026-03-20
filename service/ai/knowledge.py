@@ -14,6 +14,15 @@ import shutil
 import tempfile
 from datetime import datetime
 
+from fastapi import Request
+from utils.http_body import (
+    collect_upload_files_from_form,
+    query_dict,
+    read_json_optional,
+    read_json_or_form_fields,
+    write_upload_to_disk,
+)
+
 from service.ai.files import convert_doc_to_docx_with_libreoffice, convert_ppt_to_pptx_with_libreoffice
 from service.ai.vector_db import (
     DB_NAME_PATTERN,
@@ -599,21 +608,19 @@ def _list_knowledge_bases_from_mysql() -> list[dict]:
 
 # --------------- HTTP 接口 ---------------
 
-def list_knowledge_bases_api():
+async def list_knowledge_bases_api(request: Request):
     """列出所有知识库（查 knowledge_base 表）。GET 或 POST 均可。"""
-    from flask import jsonify
     items = _list_knowledge_bases_from_mysql()
-    return jsonify({"code": 0, "msg": "ok", "data": {"list": items, "names": [x["name"] for x in items]}})
+    return ({"code": 0, "msg": "ok", "data": {"list": items, "names": [x["name"] for x in items]}})
 
 
-def create_knowledge_base_api():
+async def create_knowledge_base_api(request: Request):
     """
     新增知识库：仅写 knowledge_base 表（名称、描述、策略等），不建向量库；向量化在「向量化」步骤执行。
     POST body: { "name": "库名", "description": "可选" }
     """
-    from flask import request, jsonify
     from model.ai import KnowledgeBase
-    data = request.get_json(silent=True) or {}
+    data = await read_json_optional(request) or {}
     name = (data.get("name") or data.get("db") or "").strip()
     if not name:
         raise ValueError("缺少参数 name 或 db（需 POST JSON body）")
@@ -629,7 +636,7 @@ def create_knowledge_base_api():
         "chunking_strategy": data.get("chunking_strategy") or "custom",
     })
     row = KnowledgeBase.get_by_id(row_id)
-    return jsonify({
+    return ({
         "code": 0,
         "msg": "ok",
         "data": {
@@ -642,30 +649,31 @@ def create_knowledge_base_api():
     })
 
 
-def create_knowledge_base_from_pdf_api():
+async def create_knowledge_base_from_pdf_api(request: Request):
     """
     从 PDF 创建知识库：写 knowledge_base + knowledge_base_document + knowledge_base_segment，并执行向量化。
     POST multipart/form-data: name（必填）, file（PDF 文件）, description/chunk_size/chunk_overlap 可选。
     """
     import tempfile
-    from flask import request, jsonify
     from model.ai import KnowledgeBase
-    name = (request.form.get("name") or request.form.get("db") or "").strip()
+
+    form = await request.form()
+    name = (form.get("name") or form.get("db") or "").strip()
     if not name:
         raise ValueError("缺少参数 name 或 db")
     if not DB_NAME_PATTERN.match(name):
         raise ValueError("库名仅允许 a-zA-Z0-9_-")
-    f = request.files.get("file") or request.files.get("pdf")
+    f = form.get("file") or form.get("pdf")
     if not f or not f.filename:
         raise ValueError("请上传 PDF 文件（字段 file 或 pdf）")
     if not (f.filename or "").lower().endswith(".pdf"):
         raise ValueError("仅支持 PDF 文件")
-    description = (request.form.get("description") or "").strip() or None
+    description = (form.get("description") or "").strip() or None
     if KnowledgeBase.select_one_by({"name": name}):
         raise ValueError(f"库名已存在: {name}")
     try:
-        chunk_size = int(request.form.get("chunk_size") or "1000")
-        chunk_overlap = int(request.form.get("chunk_overlap") or "200")
+        chunk_size = int(form.get("chunk_size") or "1000")
+        chunk_overlap = int(form.get("chunk_overlap") or "200")
     except (TypeError, ValueError):
         chunk_size, chunk_overlap = 1000, 200
     chunk_size = max(100, min(4000, chunk_size))
@@ -674,7 +682,7 @@ def create_knowledge_base_from_pdf_api():
     try:
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
             tmp_path = tmp.name
-            f.save(tmp_path)
+        await write_upload_to_disk(f, tmp_path)
         documents = _documents_from_pdf(tmp_path, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
         if not documents:
             raise ValueError("PDF 中未提取到有效文本")
@@ -684,7 +692,7 @@ def create_knowledge_base_from_pdf_api():
         _add_document_and_segments_to_kb(kb_id, fn, documents, path=saved_path)
         vec = vectorize_knowledge_base(kb_id)
         kb = KnowledgeBase.get_by_id(kb_id)
-        return jsonify({
+        return ({
             "code": 0,
             "msg": "ok",
             "data": {
@@ -702,15 +710,14 @@ def create_knowledge_base_from_pdf_api():
                 pass
 
 
-def preview_segments_from_db_api():
+async def preview_segments_from_db_api(request: Request):
     """
     分段预览（已落库）：按文档 id 列表直接返回库中已有分段，不解析文件。
     GET /ai/knowledge-base/segments/preview?document_ids=1,2,3
     响应：{ "code": 0, "data": { "documents": [ { "document_id", "file_name", "segments": [ { "id", "text", "index", ... } ] }, ... ] } }
     """
-    from flask import request, jsonify
     from model.ai import KnowledgeBaseDocument, KnowledgeBaseSegment
-    ids_param = request.args.get("document_ids") or request.args.get("document_ids[]")
+    ids_param = query_dict(request).get("document_ids") or query_dict(request).get("document_ids[]")
     if not ids_param:
         raise ValueError("请提供 document_ids（Query，逗号分隔或多次传），如 ?document_ids=1,2,3")
     if isinstance(ids_param, (list, tuple)):
@@ -739,7 +746,7 @@ def preview_segments_from_db_api():
             for r in rows
         ]
         documents_out.append({"document_id": did, "file_name": file_name, "segments": segments})
-    return jsonify({"code": 0, "msg": "ok", "data": {"documents": documents_out}})
+    return ({"code": 0, "msg": "ok", "data": {"documents": documents_out}})
 
 
 def _resegment_one_document(document_id: int, chunk_size: int, chunk_overlap: int) -> int:
@@ -768,7 +775,7 @@ def _resegment_one_document(document_id: int, chunk_size: int, chunk_overlap: in
     return len([d for d in documents if (d.get("text") or d.get("content") or "").strip()])
 
 
-def execute_segments_api():
+async def execute_segments_api(request: Request):
     """
     执行分段并落库（不向量化）。使用文档列表 + 分层参数（分段长度、分段重叠）。
     两种用法：
@@ -776,9 +783,8 @@ def execute_segments_api():
     2）对已上传文件执行分段并加入知识库：body 传 kb_id + file_id + file_name + 可选 chunk_size/chunk_overlap。
     POST body: JSON，如 { "document_ids": [1, 2], "chunk_size": 1000, "chunk_overlap": 200 }
     """
-    from flask import request, jsonify
     from model.ai import KnowledgeBaseDocument, KnowledgeBaseSegment
-    data = request.get_json(silent=True) or request.form or {}
+    data = (await read_json_or_form_fields(request)) or {}
     document_ids = data.get("document_ids")
     kb_id = data.get("kb_id")
     file_id = data.get("file_id")
@@ -810,7 +816,7 @@ def execute_segments_api():
                 results.append({"document_id": did, "segment_count": cnt})
             except FileNotFoundError as e:
                 results.append({"document_id": did, "segment_count": 0, "error": str(e)})
-        return jsonify({
+        return ({
             "code": 0,
             "msg": "ok",
             "data": {
@@ -834,7 +840,7 @@ def execute_segments_api():
         if not documents:
             raise ValueError("文件中未解析出有效内容")
         out = _add_document_and_segments_to_kb(kb_id, file_name, documents, file_id=file_id, path=file_path)
-        return jsonify({
+        return ({
             "code": 0,
             "msg": "ok",
             "data": {"document_id": out["document_id"], "segment_count": out["segment_count"], "re_segmented": False},
@@ -843,7 +849,7 @@ def execute_segments_api():
     raise ValueError("请提供 document_ids（文档列表+分层参数重新分段）或 kb_id+file_id+file_name（对已上传文件执行分段并加入知识库）")
 
 
-def upload_knowledge_base_api():
+async def upload_knowledge_base_api(request: Request):
     """
     知识库上传资料：仅保存文件到项目目录 data/knowledge_base/{kb_id}/ 并写入
     knowledge_base_document + knowledge_base_segment，不自动向量化；需要检索时再调 POST /ai/knowledge-base/vectorize。
@@ -851,19 +857,12 @@ def upload_knowledge_base_api():
     POST multipart/form-data: file 或 file[]（可多个）, name 或 kb_id/kb_name, description/chunk_size/chunk_overlap 可选。
     """
     import tempfile
-    from flask import request, jsonify
     from sqlalchemy.exc import IntegrityError
     from app.app import db
     from model.ai import KnowledgeBase
-    # 支持多文件：收集所有名为 file / file[] / file[0],file[1] / files 的表单文件
-    file_list = []
-    for key in request.files:
-        if key in ("file", "file[]", "files") or (key.startswith("file[") and key.endswith("]")):
-            file_list.extend(request.files.getlist(key))
-    if not file_list:
-        single = request.files.get("file")
-        if single and single.filename:
-            file_list = [single]
+    form = await request.form()
+    # 支持多文件：收集所有名为 file / file[] / file[0] / files 的表单文件
+    file_list = collect_upload_files_from_form(form)
     if not file_list or not any((f and (f.filename or "").strip()) for f in file_list):
         raise ValueError("请上传至少一个文件（字段 file / file[] / file[0] / files）")
     _IMAGE_EXT = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
@@ -878,11 +877,11 @@ def upload_knowledge_base_api():
         files_to_process.append((f, fn))
     if not files_to_process:
         raise ValueError("请上传至少一个支持的文件（.pdf / .doc / .docx / .ppt / .pptx / .xls / .xlsx / .txt / .md 或图片 .jpg / .png 等）")
-    name = (request.form.get("name") or request.form.get("db") or "").strip()
-    kb_id = request.form.get("kb_id")
+    name = (form.get("name") or form.get("db") or "").strip()
+    kb_id = form.get("kb_id")
     if kb_id is not None and (kb_id == "" or (isinstance(kb_id, str) and not kb_id.strip())):
         kb_id = None
-    kb_name = (request.form.get("kb_name") or request.form.get("kb") or "").strip()
+    kb_name = (form.get("kb_name") or form.get("kb") or "").strip()
     if not kb_id and not kb_name:
         if not name:
             raise ValueError("新建知识库时请提供 name；或提供 kb_id/kb_name 追加到已有库")
@@ -903,12 +902,12 @@ def upload_knowledge_base_api():
             kb_id = kb.id if kb else None
         if not kb:
             raise FileNotFoundError("知识库不存在")
-    description = (request.form.get("description") or "").strip() or None
+    description = (form.get("description") or "").strip() or None
     # 批量上传图片时可选：skip_ocr=true 跳过 OCR（先保存，后续再处理），避免接口超时
-    skip_ocr = request.form.get("skip_ocr", "").lower() in ("true", "1", "yes")
+    skip_ocr = (form.get("skip_ocr") or "").lower() in ("true", "1", "yes")
     try:
-        chunk_size = int(request.form.get("chunk_size") or "1000")
-        chunk_overlap = int(request.form.get("chunk_overlap") or "200")
+        chunk_size = int(form.get("chunk_size") or "1000")
+        chunk_overlap = int(form.get("chunk_overlap") or "200")
     except (TypeError, ValueError):
         chunk_size, chunk_overlap = 1000, 200
     chunk_size = max(100, min(4000, chunk_size))
@@ -954,7 +953,7 @@ def upload_knowledge_base_api():
                 with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
                     tmp_path = tmp.name
                     tmp_paths.append(tmp_path)
-                    f.save(tmp_path)
+                    await write_upload_to_disk(f, tmp_path)
                 # 先保存文件到知识库文件夹，即使解析失败也要保存
                 saved_path = _save_upload_to_kb_folder(kb_id, tmp_path, fn)
                 # 更新已存在列表，避免同批次重复
@@ -1020,7 +1019,7 @@ def upload_knowledge_base_api():
                         pass
                 if tmp_path in tmp_paths:
                     tmp_paths.remove(tmp_path)
-        return jsonify({
+        return ({
             "code": 0,
             "msg": "ok",
             "data": {
@@ -1053,16 +1052,15 @@ def upload_knowledge_base_api():
                     pass
 
 
-def list_knowledge_base_documents_api():
+async def list_knowledge_base_documents_api(request: Request):
     """
     按知识库 id 获取文档列表（用于「分段预览」步骤左侧文档列表）。
     GET /ai/knowledge-base/documents?kb_id=1 或 ?kb_name=xxx
     返回该知识库下所有 knowledge_base_document，含 id、file_name、path、segment_count、status 等。
     """
-    from flask import request, jsonify
     from model.ai import KnowledgeBase, KnowledgeBaseDocument, KnowledgeBaseSegment
-    kb_id = request.args.get("kb_id")
-    kb_name = (request.args.get("kb_name") or request.args.get("kb") or "").strip()
+    kb_id = query_dict(request).get("kb_id")
+    kb_name = (query_dict(request).get("kb_name") or query_dict(request).get("kb") or "").strip()
     if not kb_id and not kb_name:
         raise ValueError("请提供 kb_id 或 kb_name（Query 参数）")
     if kb_id is not None:
@@ -1094,16 +1092,15 @@ def list_knowledge_base_documents_api():
             "segment_count": seg_counts.get(r.id, 0),
             "create_at": r.create_at.isoformat() if getattr(r, "create_at", None) else None,
         })
-    return jsonify({"code": 0, "msg": "ok", "data": {"list": list_, "total": len(list_)}})
+    return ({"code": 0, "msg": "ok", "data": {"list": list_, "total": len(list_)}})
 
 
-def get_document_segments_api(document_id: int):
+async def get_document_segments_api(request: Request, document_id: int):
     """
     按文档 id 获取分段列表（用于「分段预览」步骤右侧分段预览面板）。
     GET /ai/knowledge-base/document/<document_id>/segments
     返回该文档下所有 knowledge_base_segment，按 index 排序。
     """
-    from flask import jsonify
     from model.ai import KnowledgeBaseDocument, KnowledgeBaseSegment
     doc = KnowledgeBaseDocument.get_by_id(document_id)
     if not doc:
@@ -1122,7 +1119,7 @@ def get_document_segments_api(document_id: int):
             "parent_id": getattr(r, "parent_id", None),
             "metadata": getattr(r, "segment_metadata", None) if hasattr(r, "segment_metadata") else None,
         })
-    return jsonify({"code": 0, "msg": "ok", "data": {"list": list_, "total": len(list_)}})
+    return ({"code": 0, "msg": "ok", "data": {"list": list_, "total": len(list_)}})
 
 
 def _resolve_kb_document_path(path: str) -> str | None:
@@ -1151,7 +1148,7 @@ def _resolve_kb_document_path(path: str) -> str | None:
     return None
 
 
-def preview_knowledge_document_api(document_id: int):
+async def preview_knowledge_document_api(request: Request, document_id: int):
     """
     GET /ai/knowledge-base/document/<document_id>/preview
     根据知识库文档 id 返回文件预览。文档路径来自 knowledge_base_document.path。
@@ -1185,13 +1182,12 @@ def preview_knowledge_document_api(document_id: int):
     )
 
 
-def sync_knowledge_base_from_disk_api():
+async def sync_knowledge_base_from_disk_api(request: Request):
     """
     将磁盘上已存在的向量库同步到 MySQL（补写 vector_db、vector_db_document）。
     POST body: { "name": "disney", "description": "可选" }
     """
-    from flask import request, jsonify
-    data = request.get_json() or {}
+    data = await read_json_optional(request) or {}
     name = (data.get("name") or data.get("db") or "").strip()
     if not name:
         raise ValueError("缺少参数 name 或 db")
@@ -1199,17 +1195,16 @@ def sync_knowledge_base_from_disk_api():
         raise ValueError("库名仅允许 a-zA-Z0-9_-")
     description = (data.get("description") or "").strip() or None
     out = sync_vector_db_from_disk(name, description=description)
-    return jsonify({"code": 0, "msg": "ok", "data": out})
+    return ({"code": 0, "msg": "ok", "data": out})
 
 
-def rebuild_knowledge_base_api():
+async def rebuild_knowledge_base_api(request: Request):
     """
     按知识库 id 重建关联的向量库索引（从 MySQL 文档重新生成向量并写回磁盘）。
     POST body: { "id": 1 }（知识库 id）
     """
-    from flask import request, jsonify
     from model.ai import KnowledgeBase
-    data = request.get_json() or {}
+    data = await read_json_optional(request) or {}
     kb_id = data.get("id")
     if kb_id is None:
         raise ValueError("请提供 id（知识库 id）")
@@ -1223,16 +1218,15 @@ def rebuild_knowledge_base_api():
     if not kb.vector_db_id:
         raise ValueError("该知识库尚未向量化，请先执行向量化")
     out = rebuild_vector_db_from_mysql(db_id=kb.vector_db_id)
-    return jsonify({"code": 0, "msg": "ok", "data": out})
+    return ({"code": 0, "msg": "ok", "data": out})
 
 
-def vectorize_knowledge_base_api():
+async def vectorize_knowledge_base_api(request: Request):
     """
     按知识库 id 将该库下全部分段向量化并写入关联向量库（无则创建）。
     POST body: { "knowledge_base_id": 1 }
     """
-    from flask import request, jsonify
-    data = request.get_json() or {}
+    data = await read_json_optional(request) or {}
     kb_id = data.get("knowledge_base_id")
     if kb_id is None:
         raise ValueError("请提供 knowledge_base_id")
@@ -1241,19 +1235,18 @@ def vectorize_knowledge_base_api():
     except (TypeError, ValueError):
         raise ValueError("knowledge_base_id 必须为数字")
     out = vectorize_knowledge_base(kb_id)
-    return jsonify({"code": 0, "msg": "ok", "data": out})
+    return ({"code": 0, "msg": "ok", "data": out})
 
 
-def vectorize_with_file_api():
+async def vectorize_with_file_api(request: Request):
     """
     按 file_id 取文件并解析为分段，写入 knowledge_base_document + knowledge_base_segment，再执行向量化。
     请求：POST JSON 或 form — kb_id（知识库 id）, file_id, file_name, chunk_size/chunk_overlap 可选。
     响应：{ "code": 0, "msg": "ok", "data": { "id", "name", "count", "appended" } }
     """
-    from flask import request, jsonify
     from model.ai import KnowledgeBase
     from service.ai.files import get_file_path
-    data = request.get_json(silent=True) or request.form
+    data = await read_json_or_form_fields(request)
     kb_id = data.get("kb_id") or data.get("knowledge_base_id")
     file_id = (data.get("file_id") or "").strip()
     file_name = (data.get("file_name") or "").strip()
@@ -1283,21 +1276,20 @@ def vectorize_with_file_api():
     out = _add_document_and_segments_to_kb(kb_id, file_name, documents, file_id=file_id, path=file_path)
     vec = vectorize_knowledge_base(kb_id)
     kb = KnowledgeBase.get_by_id(kb_id)
-    return jsonify({
+    return ({
         "code": 0,
         "msg": "ok",
         "data": {"id": kb.id, "name": kb.name, "count": vec["count"], "appended": out["segment_count"]},
     })
 
 
-def update_knowledge_base_api():
+async def update_knowledge_base_api(request: Request):
     """
     更新知识库元信息（knowledge_base 表）：name、description、解析/分段策略等；不动文档与向量库。
     POST body: { "id": 1, "name": "可选", "description": "可选", "parsing_strategy", "chunking_strategy", ... }
     """
-    from flask import request, jsonify
     from model.ai import KnowledgeBase
-    data = request.get_json() or {}
+    data = await read_json_optional(request) or {}
     kb_id = data.get("id")
     if kb_id is None:
         raise ValueError("缺少参数 id")
@@ -1328,18 +1320,17 @@ def update_knowledge_base_api():
     if len(update_data) > 1:
         KnowledgeBase.update(update_data)
     row = KnowledgeBase.get_by_id(kb_id)
-    return jsonify({
+    return ({
         "code": 0,
         "msg": "ok",
         "data": {"id": row.id, "name": row.name, "description": (row.description or "").strip() or None, "vector_db_id": row.vector_db_id},
     })
 
 
-def delete_knowledge_base_api():
+async def delete_knowledge_base_api(request: Request):
     """删除知识库：若有关联向量库则先删向量库（MySQL+磁盘），再删 knowledge_base。POST body: { "id": 1 }"""
-    from flask import request, jsonify
     from model.ai import KnowledgeBase
-    data = request.get_json() or {}
+    data = await read_json_optional(request) or {}
     kb_id = data.get("id")
     if kb_id is None:
         raise ValueError("缺少参数 id")
@@ -1354,14 +1345,13 @@ def delete_knowledge_base_api():
     if kb.vector_db_id:
         delete_vector_db_by_id(kb.vector_db_id)
     KnowledgeBase.force_delete({"id": kb_id})
-    return jsonify({"code": 0, "msg": "ok", "data": {"id": kb_id, "name": name}})
+    return ({"code": 0, "msg": "ok", "data": {"id": kb_id, "name": name}})
 
 
-def delete_knowledge_base_document_api():
+async def delete_knowledge_base_document_api(request: Request):
     """删除知识库下的一条文档：删除分段、文档记录，并删除磁盘上的文件。POST body: { "document_id": 1 } 或 { "id": 1 }"""
-    from flask import request, jsonify
     from model.ai import KnowledgeBaseDocument, KnowledgeBaseSegment
-    data = request.get_json() or {}
+    data = await read_json_optional(request) or {}
     document_id = data.get("document_id") or data.get("id")
     if document_id is None:
         raise ValueError("缺少参数 document_id 或 id")
@@ -1381,20 +1371,19 @@ def delete_knowledge_base_document_api():
             os.remove(path)
         except OSError:
             pass
-    return jsonify({
+    return ({
         "code": 0,
         "msg": "ok",
         "data": {"document_id": document_id, "file_name": file_name},
     })
 
 
-def get_knowledge_base_detail_api():
+async def get_knowledge_base_detail_api(request: Request):
     """获取知识库详情（knowledge_base 表）。GET ?id=1 或 ?name=xxx&with_documents=0|1"""
-    from flask import request, jsonify
     from model.ai import KnowledgeBase, KnowledgeBaseDocument, KnowledgeBaseSegment, VectorDb
-    kb_id = request.args.get("id")
-    kb_name = request.args.get("name")
-    with_documents = request.args.get("with_documents", "0") in ("1", "true", "yes")
+    kb_id = query_dict(request).get("id")
+    kb_name = query_dict(request).get("name")
+    with_documents = query_dict(request).get("with_documents", "0") in ("1", "true", "yes")
     if not kb_id and not kb_name:
         raise ValueError("请提供 id 或 name")
     if kb_id is not None:
@@ -1432,7 +1421,7 @@ def get_knowledge_base_detail_api():
     else:
         detail["documents"] = []
         detail["segments"] = []
-    return jsonify({"code": 0, "msg": "ok", "data": detail})
+    return ({"code": 0, "msg": "ok", "data": detail})
 
 
 if __name__ == "__main__":

@@ -9,7 +9,10 @@ import tempfile
 from io import BytesIO
 
 import torch
-from flask import request, send_file, jsonify
+from fastapi import Request
+from fastapi.responses import JSONResponse, StreamingResponse
+
+from utils.http_body import is_json_request, read_form_optional, read_json_optional
 
 from diffsynth_engine import (
     fetch_model,
@@ -58,37 +61,45 @@ def _get_pipeline():
     return _image_pipe_qwen
 
 
-def generate_qwen():
-    data = request.get_json(silent=True) or {}
-    prompt = data.get("prompt") or (request.form and request.form.get("prompt"))
+async def generate_qwen(request: Request):
+    if is_json_request(request):
+        data = await read_json_optional(request) or {}
+        form = {}
+    else:
+        form = await read_form_optional(request)
+        data = {}
+
+    prompt = data.get("prompt") or form.get("prompt")
     if not prompt or not str(prompt).strip():
-        return jsonify({"code": 400, "msg": "Missing prompt"}), 400
+        return ({"code": 400, "msg": "Missing prompt"}, 400)
 
     prompt = str(prompt).strip()
     width = _int_or_default(
         data.get("width"),
-        request.form.get("width") if request.form else None,
+        form.get("width") if form else None,
         1024,
         512,
         2048,
     )
     height = _int_or_default(
         data.get("height"),
-        request.form.get("height") if request.form else None,
+        form.get("height") if form else None,
         1024,
         512,
         2048,
     )
-    seed = data.get("seed")
+    seed = data.get("seed") if data else form.get("seed")
     if seed is not None:
         try:
             seed = int(seed)
         except (TypeError, ValueError):
             seed = None
     num_inference_steps = _int_or_default(
-        data.get("num_inference_steps"), None, 2, 1, 50
+        data.get("num_inference_steps"), form.get("num_inference_steps") if form else None, 2, 1, 50
     )
-    cfg_scale = _float_or_default(data.get("cfg_scale"), None, 1.0)
+    cfg_scale = _float_or_default(
+        data.get("cfg_scale"), form.get("cfg_scale") if form else None, 1.0
+    )
 
     tmp = None
     try:
@@ -111,11 +122,10 @@ def generate_qwen():
         except Exception:
             pass
         buf.seek(0)
-        return send_file(
+        return StreamingResponse(
             buf,
-            mimetype="image/png",
-            as_attachment=False,
-            download_name="image.png",
+            media_type="image/png",
+            headers={"Content-Disposition": 'inline; filename="image.png"'},
         )
     except Exception as e:
         if tmp and os.path.exists(tmp):
@@ -123,7 +133,7 @@ def generate_qwen():
                 os.unlink(tmp)
             except Exception:
                 pass
-        return jsonify({"code": 500, "msg": str(e)}), 500
+        return JSONResponse(content={"code": 500, "msg": str(e)}, status_code=500)
 
 
 def _int_or_default(val, form_val, default, min_val, max_val):

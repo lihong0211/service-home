@@ -10,10 +10,12 @@ import tempfile
 import av
 import numpy as np
 import torch
-from flask import request, jsonify
+from fastapi import Request
 from PIL import Image
 
 from qwen_vl_utils import process_vision_info
+
+from utils.http_body import is_json_request, read_json_optional, read_form_optional, write_upload_to_disk
 
 # 模型路径，可用环境变量 VIDEO_MODEL_PATH 覆盖
 MODEL_PATH = os.environ.get("VIDEO_MODEL_PATH", "models/Qwen/Qwen2-VL-2B-Instruct")
@@ -127,7 +129,7 @@ def _analyze_video(video_path, question, num_frames=6):
     return answer
 
 
-def video_understand():
+async def video_understand(request: Request):
     """
     视频理解接口
 
@@ -136,46 +138,46 @@ def video_understand():
 
     响应：{ "code": 0, "answer": "回答文本" }
     """
-    data = request.get_json(silent=True) or {}
-    question = (
-        data.get("question")
-        or (request.form and request.form.get("question"))
-    )
-    if not question or not str(question).strip():
-        raise ValueError("Missing question")
-    question = str(question).strip()
-
-    num_frames = 6
-    if "num_frames" in data or (request.form and request.form.get("num_frames")):
-        try:
-            num_frames = int(
-                data.get("num_frames")
-                or (request.form and request.form.get("num_frames"))
-                or 6
-            )
-            num_frames = max(1, min(32, num_frames))
-        except (TypeError, ValueError):
-            pass
-
     video_path = None
     try:
-        if request.files:
-            f = request.files.get("video") or request.files.get("file")
-            if not f or not f.filename:
+        if is_json_request(request):
+            body = await read_json_optional(request) or {}
+            form = {}
+        else:
+            form = await read_form_optional(request)
+            body = {}
+
+        question = body.get("question") or form.get("question")
+        if not question or not str(question).strip():
+            raise ValueError("Missing question")
+        question = str(question).strip()
+
+        num_frames = 6
+        nf = body.get("num_frames") if body else None
+        if nf is None and form:
+            nf = form.get("num_frames")
+        if nf is not None:
+            try:
+                num_frames = max(1, min(32, int(nf)))
+            except (TypeError, ValueError):
+                pass
+
+        if form:
+            f = form.get("video") or form.get("file")
+            if not f or not getattr(f, "filename", None):
                 raise ValueError("Missing video or file in form")
             suffix = os.path.splitext(f.filename)[1] or ".mp4"
             fd, video_path = tempfile.mkstemp(suffix=suffix)
             os.close(fd)
-            f.save(video_path)
-        elif request.is_json:
-            b64 = data.get("video_base64") or data.get("video")
+            await write_upload_to_disk(f, video_path)
+        elif body:
+            b64 = body.get("video_base64") or body.get("video")
             if not b64:
                 raise ValueError("Missing video_base64 or video in body")
             raw = base64.b64decode(
                 b64.split(",", 1)[-1] if isinstance(b64, str) and "base64," in b64 else b64
             )
-            suffix = ".mp4"
-            fd, video_path = tempfile.mkstemp(suffix=suffix)
+            fd, video_path = tempfile.mkstemp(suffix=".mp4")
             os.close(fd)
             with open(video_path, "wb") as out:
                 out.write(raw)
@@ -183,7 +185,7 @@ def video_understand():
             raise ValueError("Send multipart video/file or JSON with video_base64")
 
         answer = _analyze_video(video_path, question, num_frames=num_frames)
-        return jsonify({"code": 0, "answer": answer})
+        return {"code": 0, "answer": answer}
     finally:
         if video_path and os.path.exists(video_path):
             try:

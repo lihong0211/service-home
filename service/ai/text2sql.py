@@ -5,8 +5,9 @@ import os
 import re
 from urllib.parse import quote_plus
 
-from flask import request
+from fastapi import Request
 
+from utils.http_body import query_dict, read_json_optional
 from utils.response import api_response
 from sqlalchemy import create_engine, text, inspect
 from langchain_community.utilities import SQLDatabase
@@ -116,8 +117,8 @@ def text2sql_run(question: str, model: str = "qwen-turbo", max_rows: int = 500) 
         return {"sql": sql, "data": [], "error": f"执行 SQL 失败: {e}"}
 
 
-def text2sql_api():
-    data = request.get_json() or {}
+async def text2sql_api(request: Request):
+    data = await read_json_optional(request) or {}
     question = (data.get("question") or data.get("query") or "").strip()
     model = (data.get("model") or "qwen-turbo").strip() or "qwen-turbo"
     max_rows = data.get("max_rows", 500)
@@ -210,11 +211,11 @@ def table_data_run(table_name: str, page: int = 1, page_size: int = 20) -> dict:
         }
 
 
-def table_data_api():
+async def table_data_api(request: Request):
     if request.method == "GET":
-        params = request.args
+        params = query_dict(request)
     else:
-        params = request.get_json() or {}
+        params = await read_json_optional(request) or {}
     table_name = (params.get("table") or params.get("table_name") or "").strip()
     page = params.get("page", 1)
     page_size = params.get("page_size", 20)

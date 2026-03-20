@@ -1,7 +1,8 @@
 """service/ai 技术文档接口：按编号返回对应 Markdown 文件。"""
 import os
 
-from flask import send_file, jsonify
+from fastapi import Request
+from fastapi.responses import FileResponse
 
 _DOCS_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
@@ -23,7 +24,7 @@ _DOC_MAP = {
 }
 
 
-def service_ai_doc_api(doc_id: int):
+async def service_ai_doc_api(request: Request, doc_id: int):
     """
     GET /ai/docs/<doc_id>
 
@@ -42,12 +43,13 @@ def service_ai_doc_api(doc_id: int):
       9  → 09_finetuning.md
     """
     filename = _DOC_MAP.get(doc_id)
+    _ = request  # 保留签名与路由调度一致
     if not filename:
         return (
-            jsonify({"code": 404, "msg": f"文档编号 {doc_id} 不存在，有效范围：0-9"}),
+            {"code": 404, "msg": f"文档编号 {doc_id} 不存在，有效范围：0-9"},
             404,
         )
     filepath = os.path.join(_DOCS_DIR, filename)
     if not os.path.isfile(filepath):
-        return jsonify({"code": 500, "msg": f"文档文件未找到：{filename}"}), 500
-    return send_file(filepath, mimetype="text/markdown; charset=utf-8")
+        return ({"code": 500, "msg": f"文档文件未找到：{filename}"}, 500)
+    return FileResponse(filepath, media_type="text/markdown; charset=utf-8")

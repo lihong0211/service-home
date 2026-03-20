@@ -10,7 +10,9 @@ import re
 import time
 import json
 from openai import OpenAI
-from flask import request, jsonify
+
+from fastapi import Request
+from utils.http_body import query_dict, read_json_optional
 
 # faiss/numpy 延后到首次使用时 import，避免进程启动即加载、CTRL+C 退出时析构顺序导致 segfault
 
@@ -965,16 +967,16 @@ def search_in_db(db_name: str, query: str, top_k: int = 3) -> list[dict]:
 
 # ---------- HTTP 接口（/ai/vector-db/*） ----------
 
-def list_api():
+async def list_api(request: Request):
     """GET/POST /ai/vector-db/list — 从 MySQL 列出向量库。"""
     items = list_vector_dbs_from_mysql()
-    return jsonify({"code": 0, "msg": "ok", "data": {"list": items, "names": [x["name"] for x in items]}})
+    return ({"code": 0, "msg": "ok", "data": {"list": items, "names": [x["name"] for x in items]}})
 
 
-def create_api():
+async def create_api(request: Request):
     """POST /ai/vector-db — 创建向量库。body: name, description?, documents?"""
     from model.ai import VectorDb
-    data = request.get_json(silent=True) or {}
+    data = await read_json_optional(request) or {}
     name = (data.get("name") or data.get("db") or "").strip()
     if not name:
         raise ValueError("缺少参数 name 或 db")
@@ -992,7 +994,7 @@ def create_api():
         if docs:
             _sync_categories_from_documents(row_id, docs)
         row = VectorDb.get_by_id(row_id)
-        return jsonify({
+        return ({
             "code": 0,
             "msg": "ok",
             "data": {"id": row_id, "name": name, "description": description, "count": out["count"], "path": out["path"]},
@@ -1003,11 +1005,11 @@ def create_api():
         raise e_vec
 
 
-def detail_api():
+async def detail_api(request: Request):
     """GET /ai/vector-db/detail — 向量库详情。query: id 或 name, with_documents?"""
-    db_id = request.args.get("id")
-    db_name = request.args.get("name")
-    with_documents = request.args.get("with_documents", "0") in ("1", "true", "yes")
+    db_id = query_dict(request).get("id")
+    db_name = query_dict(request).get("name")
+    with_documents = query_dict(request).get("with_documents", "0") in ("1", "true", "yes")
     if not db_id and not db_name:
         raise ValueError("请提供 id 或 name")
     if db_id is not None:
@@ -1018,13 +1020,13 @@ def detail_api():
     else:
         db_id = None
     detail = get_vector_db_detail(db_id=db_id, db_name=db_name, with_documents=with_documents)
-    return jsonify({"code": 0, "msg": "ok", "data": detail})
+    return ({"code": 0, "msg": "ok", "data": detail})
 
 
-def update_api():
+async def update_api(request: Request):
     """POST /ai/vector-db/update — 全量替换文档并重建。body: id, documents, description?"""
     from model.ai import VectorDb
-    data = request.get_json() or {}
+    data = await read_json_optional(request) or {}
     db_id = data.get("id")
     if db_id is None:
         raise ValueError("缺少参数 id")
@@ -1051,13 +1053,13 @@ def update_api():
         update_data["description"] = description
     if len(update_data) > 1:
         VectorDb.update(update_data)
-    return jsonify({"code": 0, "msg": "ok", "data": {"id": db_id, "name": name, "count": out["count"]}})
+    return ({"code": 0, "msg": "ok", "data": {"id": db_id, "name": name, "count": out["count"]}})
 
 
-def update_meta_api():
+async def update_meta_api(request: Request):
     """POST /ai/vector-db/update-meta — 仅更新向量库元信息（说明、名称），不动文档与索引。body: id, description?, name?"""
     from model.ai import VectorDb
-    data = request.get_json() or {}
+    data = await read_json_optional(request) or {}
     db_id = data.get("id")
     if db_id is None:
         raise ValueError("缺少参数 id")
@@ -1085,7 +1087,7 @@ def update_meta_api():
     if len(update_data) > 1:
         VectorDb.update(update_data)
     row = VectorDb.get_by_id(db_id)
-    return jsonify({
+    return ({
         "code": 0,
         "msg": "ok",
         "data": {
@@ -1096,9 +1098,9 @@ def update_meta_api():
     })
 
 
-def delete_api():
+async def delete_api(request: Request):
     """POST /ai/vector-db/delete — 删除向量库。body: id"""
-    data = request.get_json() or {}
+    data = await read_json_optional(request) or {}
     db_id = data.get("id")
     if db_id is None:
         raise ValueError("缺少参数 id")
@@ -1107,12 +1109,12 @@ def delete_api():
     except (TypeError, ValueError):
         raise ValueError("id 必须为数字")
     name = delete_vector_db_by_id(db_id)
-    return jsonify({"code": 0, "msg": "ok", "data": {"id": db_id, "name": name}})
+    return ({"code": 0, "msg": "ok", "data": {"id": db_id, "name": name}})
 
 
-def sync_from_disk_api():
+async def sync_from_disk_api(request: Request):
     """POST /ai/vector-db/sync-from-disk — 磁盘库同步到 MySQL。body: name 或 db, description?"""
-    data = request.get_json(silent=True) or {}
+    data = await read_json_optional(request) or {}
     name = (data.get("name") or data.get("db") or "").strip()
     if not name:
         raise ValueError("缺少参数 name 或 db")
@@ -1120,12 +1122,12 @@ def sync_from_disk_api():
         raise ValueError("库名仅允许 a-zA-Z0-9_-")
     description = (data.get("description") or "").strip() or None
     out = sync_vector_db_from_disk(name, description=description)
-    return jsonify({"code": 0, "msg": "ok", "data": out})
+    return ({"code": 0, "msg": "ok", "data": out})
 
 
-def rebuild_api():
+async def rebuild_api(request: Request):
     """POST /ai/vector-db/rebuild — 按 MySQL 文档重建向量索引。body: id 或 name/db"""
-    data = request.get_json(silent=True) or {}
+    data = await read_json_optional(request) or {}
     db_id = data.get("id")
     db_name = (data.get("name") or data.get("db") or "").strip() or None
     if not db_id and not db_name:
@@ -1138,13 +1140,13 @@ def rebuild_api():
     else:
         db_id = None
     out = rebuild_vector_db_from_mysql(db_id=db_id, db_name=db_name)
-    return jsonify({"code": 0, "msg": "ok", "data": out})
+    return ({"code": 0, "msg": "ok", "data": out})
 
 
-def documents_api():
+async def documents_api(request: Request):
     """GET /ai/vector-db/documents — 分页查文档。query: db_id 或 db_name, page, page_size, category?"""
-    db_id = request.args.get("db_id")
-    db_name = (request.args.get("db_name") or "").strip() or None
+    db_id = query_dict(request).get("db_id")
+    db_name = (query_dict(request).get("db_name") or "").strip() or None
     if not db_id and not db_name:
         raise ValueError("请提供 db_id 或 db_name")
     if db_id is not None:
@@ -1155,18 +1157,18 @@ def documents_api():
     else:
         db_id = None
     try:
-        page = int(request.args.get("page") or 1)
-        page_size = int(request.args.get("page_size") or 20)
+        page = int(query_dict(request).get("page") or 1)
+        page_size = int(query_dict(request).get("page_size") or 20)
     except (TypeError, ValueError):
         page, page_size = 1, 20
-    category = request.args.get("category")
+    category = query_dict(request).get("category")
     out = list_documents_paginated(db_id=db_id, db_name=db_name, page=page, page_size=page_size, category=category)
-    return jsonify({"code": 0, "msg": "ok", "data": out})
+    return ({"code": 0, "msg": "ok", "data": out})
 
 
-def document_add_api():
+async def document_add_api(request: Request):
     """POST /ai/vector-db/document/add — 追加一条文档。body: db_id 或 db_name, text, doc_id?, category?"""
-    data = request.get_json(silent=True) or {}
+    data = await read_json_optional(request) or {}
     db_id = data.get("db_id")
     db_name = (data.get("db_name") or "").strip() or None
     text = data.get("text")
@@ -1186,12 +1188,12 @@ def document_add_api():
     else:
         db_id = None
     out = add_single_document(db_id=db_id, db_name=db_name, doc_id=doc_id, text=str(text).strip(), category=(category or "").strip() or None if category is not None else None)
-    return jsonify({"code": 0, "msg": "ok", "data": out})
+    return ({"code": 0, "msg": "ok", "data": out})
 
 
-def document_update_api():
+async def document_update_api(request: Request):
     """POST /ai/vector-db/document/update — 更新单条文档。body: db_id 或 db_name, doc_id 或 index, text, category?"""
-    data = request.get_json() or {}
+    data = await read_json_optional(request) or {}
     db_id = data.get("db_id")
     db_name = (data.get("db_name") or "").strip() or None
     doc_id = data.get("doc_id")
@@ -1219,12 +1221,12 @@ def document_update_api():
     else:
         db_id = None
     out = update_single_document(db_id=db_id, db_name=db_name, doc_id=doc_id, index=index, text=str(text).strip(), category=(category or "").strip() or None if category is not None else None)
-    return jsonify({"code": 0, "msg": "ok", "data": out})
+    return ({"code": 0, "msg": "ok", "data": out})
 
 
-def document_delete_api():
+async def document_delete_api(request: Request):
     """POST /ai/vector-db/document/delete — 删除单条文档。body: db_id 或 db_name, doc_id"""
-    data = request.get_json() or {}
+    data = await read_json_optional(request) or {}
     db_id = data.get("db_id")
     db_name = (data.get("db_name") or "").strip() or None
     doc_id = data.get("doc_id")
@@ -1243,13 +1245,13 @@ def document_delete_api():
     else:
         db_id = None
     out = delete_single_document(db_id=db_id, db_name=db_name, doc_id=doc_id)
-    return jsonify({"code": 0, "msg": "ok", "data": out})
+    return ({"code": 0, "msg": "ok", "data": out})
 
 
-def categories_api():
+async def categories_api(request: Request):
     """GET /ai/vector-db/categories — 分类列表。query: db_id 或 db_name"""
-    db_id = request.args.get("db_id")
-    db_name = (request.args.get("db_name") or "").strip() or None
+    db_id = query_dict(request).get("db_id")
+    db_name = (query_dict(request).get("db_name") or "").strip() or None
     if not db_id and not db_name:
         raise ValueError("请提供 db_id 或 db_name")
     if db_id is not None:
@@ -1260,12 +1262,12 @@ def categories_api():
     else:
         db_id = None
     items = list_categories(db_id=db_id, db_name=db_name)
-    return jsonify({"code": 0, "msg": "ok", "data": {"list": items}})
+    return ({"code": 0, "msg": "ok", "data": {"list": items}})
 
 
-def category_add_api():
+async def category_add_api(request: Request):
     """POST /ai/vector-db/category/add — 新增分类。body: db_id 或 db_name, name, sort_order?"""
-    data = request.get_json() or {}
+    data = await read_json_optional(request) or {}
     db_id = data.get("db_id")
     db_name = (data.get("db_name") or "").strip() or None
     name = (data.get("name") or "").strip()
@@ -1287,12 +1289,12 @@ def category_add_api():
         except (TypeError, ValueError):
             sort_order = 0
     out = add_category(db_id=db_id, db_name=db_name, name=name, sort_order=sort_order)
-    return jsonify({"code": 0, "msg": "ok", "data": out})
+    return ({"code": 0, "msg": "ok", "data": out})
 
 
-def category_update_api():
+async def category_update_api(request: Request):
     """POST /ai/vector-db/category/update — 更新分类。body: id, name?, sort_order?"""
-    data = request.get_json() or {}
+    data = await read_json_optional(request) or {}
     category_id = data.get("id")
     if category_id is None:
         raise ValueError("缺少参数 id")
@@ -1305,12 +1307,12 @@ def category_update_api():
         name = str(name).strip()
     sort_order = data.get("sort_order")
     out = update_category(category_id, name=name, sort_order=sort_order)
-    return jsonify({"code": 0, "msg": "ok", "data": out})
+    return ({"code": 0, "msg": "ok", "data": out})
 
 
-def category_delete_api():
+async def category_delete_api(request: Request):
     """POST /ai/vector-db/category/delete — 删除分类。body: id"""
-    data = request.get_json() or {}
+    data = await read_json_optional(request) or {}
     category_id = data.get("id")
     if category_id is None:
         raise ValueError("缺少参数 id")
@@ -1319,12 +1321,12 @@ def category_delete_api():
     except (TypeError, ValueError):
         raise ValueError("id 必须为数字")
     out = delete_category(category_id)
-    return jsonify({"code": 0, "msg": "ok", "data": out})
+    return ({"code": 0, "msg": "ok", "data": out})
 
 
-def search_api():
+async def search_api(request: Request):
     """POST /ai/vector-db/search — 向量检索。body: db_id 或 db_name, query, top_k?"""
-    data = request.get_json(silent=True) or {}
+    data = await read_json_optional(request) or {}
     db_id = data.get("db_id")
     db_name = (data.get("db_name") or data.get("name") or "").strip()
     query = (data.get("query") or data.get("question") or "").strip()
@@ -1349,4 +1351,4 @@ def search_api():
     except (TypeError, ValueError):
         top_k = 3
     results = search_in_db(db_name, query, top_k=top_k)
-    return jsonify({"code": 0, "msg": "ok", "data": {"results": results}})
+    return ({"code": 0, "msg": "ok", "data": {"results": results}})

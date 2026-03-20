@@ -5,12 +5,15 @@ Ollama 聊天服务 - 封装本地 Ollama API，支持流式输出
 import json
 import re
 import requests
-from flask import request, jsonify, Response, stream_with_context
+from fastapi import Request
+from fastapi.responses import JSONResponse, StreamingResponse
+
+from utils.http_body import read_json_optional
 
 OLLAMA_URL = "http://localhost:11434"
-DEFAULT_MODEL = "my-deepseek-r1-1.5"
+DEFAULT_MODEL = "qwen3:1.7b"
 # 有图时可选：ocr 文字识别 / vl 视觉理解（多图、描述等）
-OCR_MODEL = "deepseek-ocr:latest"
+OCR_MODEL = "qwen3-vl:2b"
 VL_MODEL = "qwen3-vl:2b"
 
 # OCR 结果开头常见 LaTeX/模板噪声（如 <\begin、\begin{...}），识别后去掉
@@ -32,7 +35,7 @@ def _dedupe_vision_content(text):
     return "\n".join(deduped)
 
 
-def chat():
+async def chat(request: Request):
     """Ollama 聊天接口
 
     请求格式：
@@ -49,9 +52,11 @@ def chat():
     - stream=false: {"code": 0, "message": {"role": "assistant", "content": "..."}}
     - stream=true: SSE 流，每行 data: {"message": {"content": "增量", "thinking": "..."}, "done": false}
     """
-    data = request.get_json(silent=True) or {}
-    if not data and request.get_data():
-        raise ValueError("Invalid JSON or body too large")
+    data = await read_json_optional(request) or {}
+    if not data:
+        raw = await request.body()
+        if raw:
+            raise ValueError("Invalid JSON or body too large")
 
     messages = data.get("messages")
     # 兼容顶层 image（单图）或 images（多图）
@@ -115,18 +120,20 @@ def chat():
             return _stream_chat(model, messages, options, keep_alive, is_ocr, is_vision)
         return _sync_chat(model, messages, options, keep_alive, is_ocr, is_vision)
     except requests.exceptions.ConnectionError:
-        return jsonify({"code": 503, "msg": "Ollama service not running"}), 503
+        return ({"code": 503, "msg": "Ollama service not running"}, 503)
     except requests.exceptions.Timeout:
-        return jsonify({"code": 504, "msg": "Ollama request timeout"}), 504
+        return ({"code": 504, "msg": "Ollama request timeout"}, 504)
     except Exception:
         raise
 
 
-def ocr_chat():
+async def ocr_chat(request: Request):
     """专用 OCR 接口：固定使用 OCR_MODEL，请求格式同 chat（需带图）。"""
-    data = request.get_json(silent=True) or {}
-    if not data and request.get_data():
-        raise ValueError("Invalid JSON or body too large")
+    data = await read_json_optional(request) or {}
+    if not data:
+        raw = await request.body()
+        if raw:
+            raise ValueError("Invalid JSON or body too large")
 
     messages = data.get("messages")
     top_level_images = data.get("images")
@@ -183,9 +190,9 @@ def ocr_chat():
             OCR_MODEL, messages, options, keep_alive=0, is_ocr=True, is_vision=True
         )
     except requests.exceptions.ConnectionError:
-        return jsonify({"code": 503, "msg": "Ollama service not running"}), 503
+        return ({"code": 503, "msg": "Ollama service not running"}, 503)
     except requests.exceptions.Timeout:
-        return jsonify({"code": 504, "msg": "Ollama request timeout"}), 504
+        return ({"code": 504, "msg": "Ollama request timeout"}, 504)
     except Exception:
         raise
 
@@ -206,10 +213,7 @@ def _sync_chat(
             message["content"] = OCR_STRIP_PREFIX.sub("", message["content"]).strip()
         if is_vision:
             message["content"] = _dedupe_vision_content(message["content"])
-    return Response(
-        json.dumps({"code": 0, "message": message}, ensure_ascii=False),
-        mimetype="application/json; charset=utf-8",
-    )
+    return JSONResponse(content={"code": 0, "message": message})
 
 
 def _stream_chat(
@@ -260,9 +264,9 @@ def _stream_chat(
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e), 'done': True}, ensure_ascii=False)}\n\n"
 
-    return Response(
-        stream_with_context(generate()),
-        mimetype="text/event-stream; charset=utf-8",
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream; charset=utf-8",
         headers={
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",

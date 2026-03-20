@@ -1,7 +1,7 @@
 # LangGraph 多 Agent 工作流层
 
-> 文件：`service/ai/agent/`（agent.py、agent_research.py、agent_fund_qa.py、agent_wealth_advisor.py）、`service/ai/langchain.py`  
-> 生成日期：2026-02-26
+> 文件：`service/ai/agent/`（agent.py、agent_research.py、agent_fund_qa.py、agent_wealth_advisor.py、**agent_doctor.py**）、`service/ai/langchain.py`  
+> 生成日期：2026-02-26 | 更新：2026-03-11（新增医生智能体）
 
 ---
 
@@ -29,19 +29,20 @@
 
 **本模块的定位**
 
-`agent/` 目录实现三个专业领域 Agent，`agent.py` 提供统一管理入口和 Flask API，`langchain.py` 提供从 LangGraph 编译图中动态提取节点/边结构的工具函数（用于前端 3D 可视化）。三个 Agent 覆盖了反应式、深思熟虑、混合三种范式，是 LangGraph 三种设计模式的示范实现。
+`agent/` 目录实现四个专业领域 Agent：`agent.py` 提供投研、迪士尼客服、财富管理三个 Agent 的统一管理入口和 Flask API；`agent_doctor.py` 实现**医生智能体**，采用独立的多轮问诊 API（`/ai/doctor/chat`、`/ai/doctor/session/<id>`），不纳入 `list_agents`。`langchain.py` 提供从 LangGraph 编译图中动态提取节点/边结构的工具函数（用于前端 3D 可视化）。四个 Agent 覆盖反应式、深思熟虑、混合及**多轮问诊（状态持久化）**四种范式。
 
 ---
 
 ## 第二部分：架构剖析
 
-**三个 Agent 设计对比**
+**四个 Agent 设计对比**
 
 | Agent | 类型 | 技术特点 | 应用场景 |
 |-------|------|---------|---------|
 | `research_agent` | 深思熟虑型 | 多节点 StateGraph，感知→推理→规划→执行→报告 | 投资研究，需要多步分析 |
 | `fund_qa_agent` | 反应式 | 单步，知识库检索 + LLM 回答 | 迪士尼客服，需要快速响应 |
 | `wealth_advisor_agent` | 混合型 | StateGraph，根据查询类型动态路由 | 财富管理咨询，兼顾速度和深度 |
+| **医生智能体**（`agent_doctor`） | 多轮问诊型 | StateGraph + **MemorySaver**，按 session 持久化状态；信息采集→条件路由→问诊/诊断 | 患者信息采集与深度诊断分析，多轮对话 |
 
 **核心执行流程（以 `research_agent` 为例）**
 
@@ -67,6 +68,24 @@
         → 输出最终投研报告
       │
 输出：{final_report, ...完整 State}
+```
+
+**医生智能体执行流程（多轮、带状态持久化）**
+
+```
+每轮用户发消息（同一 session_id = thread_id）
+      │
+      ▼ extract_info 节点
+        → 从最新用户消息中 LLM 提取结构化患者信息，合并到 patient_info
+      │
+      ▼ check_completeness（条件路由）
+        → 判断：critical + important 字段是否充分 或 已问诊 ≥10 轮
+      │
+      ├─ 信息不足 ──► ask_questions 节点 ──► 生成 1–2 个引导问题 ──► END
+      │
+      └─ 信息充分 ──► generate_assessment 节点 ──► 深度诊断报告 ──► END
+
+状态通过 MemorySaver + thread_id 持久化，下次同一 session_id 继续累积。
 ```
 
 **流程可视化机制**
@@ -118,13 +137,16 @@ final_state = agent.invoke(input_data, config)
 
 | 函数 | 文件 | 作用 |
 |------|------|------|
-| `list_agents()` | agent.py | 返回所有 Agent 元信息 |
+| `list_agents()` | agent.py | 返回所有 Agent 元信息（不含医生智能体） |
 | `get_agent_schema(agent_id)` | agent.py | 动态提取图结构，返回前端可视化所需 JSON |
 | `run_agent_and_collect_steps(agent_id, input_data)` | agent.py | 执行 Agent，收集每步输出，供前端驱动 3D 动画 |
 | `graph_to_schema(agent, node_display)` | langchain.py | 从编译后的 LangGraph 提取节点/边结构 |
 | `create_research_agent_workflow()` | agent_research.py | 构建投研 Agent 的 StateGraph |
 | `create_fund_qa_agent()` | agent_fund_qa.py | 构建知识库问答 Agent（非 StateGraph） |
 | `create_wealth_advisor_workflow()` | agent_wealth_advisor.py | 构建财富管理 Agent 的 StateGraph |
+| `get_doctor_graph()` | agent_doctor.py | 返回医生智能体编译图（单例，带 MemorySaver） |
+| `chat(session_id, message)` | agent_doctor.py | 向医生智能体发送消息，返回回复与 phase/assessment |
+| `get_session_info(session_id)` | agent_doctor.py | 获取指定会话的问诊状态摘要（patient_info、completion_pct 等） |
 
 **设计决策与取舍**
 
@@ -163,6 +185,7 @@ DEFAULT_INPUTS = {
 
 - 投资研究自动化：输入研究主题，Agent 多步分析后输出完整投研报告
 - 领域知识问答：基于知识库的客服 Agent，比直接 RAG 更能处理多轮追问
+- 多轮问诊与诊断：医生智能体通过 `/ai/doctor/chat` 多轮采集患者信息，满足条件后生成诊断分析报告（研究/演示用途，非替代医疗）
 - 前端 3D 可视化：通过 `/ai/agent/schema` 和 `/ai/agent/run` 驱动 Agent 执行动画
 
 **环境依赖**
@@ -207,7 +230,7 @@ print(result["finalState"]["final_report"])
 - LangGraph StateGraph 让工作流节点/边完全透明，执行过程可逐步观察
 - 统一注册表设计，扩展新 Agent 成本低
 - 动态图结构提取，前端可视化无需手工维护
-- 三种 Agent 类型覆盖不同业务场景，互为参考实现
+- 四种 Agent 类型（含医生多轮问诊）覆盖不同业务场景，互为参考实现；医生智能体独立 API 便于前端直接对接多轮对话
 
 **已知局限**
 
@@ -227,3 +250,11 @@ print(result["finalState"]["final_report"])
 - **LangGraph Platform**：LangGraph 云服务版，内置 checkpointing、人工介入（Human-in-the-loop）、并行节点执行等生产级特性
 - **OpenAI Swarm / Agents SDK**：轻量级多 Agent 框架，通过 handoff 机制在 Agent 间传递控制权，适合大型多 Agent 协作
 - **自适应 RAG Agent**：Agent 根据问题复杂度动态决定是直接回答、单轮检索还是多轮检索，比固定流程更高效
+
+---
+
+## 变更记录
+
+| 日期 | 变更说明 |
+|------|----------|
+| 2026-03-11 | 新增医生智能体（`agent_doctor.py`）：多轮问诊 StateGraph + MemorySaver，独立接口 `POST /ai/doctor/chat`、`GET /ai/doctor/session/<session_id>`；补充流程图、核心函数与使用场景。 |

@@ -1,7 +1,8 @@
 # 前端对接说明（Agent / LangGraph）
 
 > 面向前端开发：智能体执行、LangGraph 图执行的接口约定、请求/响应格式、SSE 流式协议及使用示例。  
-> 后端入口：`routes/ai.py`；实现：`service/ai/agent/agent.py`、`service/ai/langchain.py`
+> 后端入口：`routes/ai.py`；实现：`service/ai/agent/agent.py`、`service/ai/langchain.py`  
+> 生成日期：2026-02-26 | 更新：2026-03-11（LangGraph 多轮对话 history、执行监控字段 totalNodes/completedSteps/executionProgress）
 
 ---
 
@@ -235,6 +236,72 @@ data: [DONE]
 
 ---
 
+### 2.5 医生智能体接口（多轮问诊）
+
+医生智能体使用**独立接口**，不通过 `/ai/agent/list` 与 `/ai/agent/run`。多轮对话由同一 `session_id` 标识，后端用 MemorySaver 持久化问诊状态。
+
+#### 发送消息（多轮对话）
+
+```http
+POST /ai/doctor/chat
+Content-Type: application/json
+```
+
+**请求体**
+
+| 字段         | 类型   | 必填 | 说明 |
+|--------------|--------|------|------|
+| `session_id` | string | 否   | 会话 ID，不传则服务端自动生成；同一问诊全程使用同一值 |
+| `message`    | string | 是   | 患者本轮发送的消息 |
+
+**响应示例**
+
+```json
+{
+  "code": 0,
+  "msg": "ok",
+  "data": {
+    "session_id": "uuid-xxx",
+    "reply": "医生回复内容（引导问题或诊断报告）",
+    "phase": "collecting",
+    "patient_info": { "age": "32岁", "chief_complaint": "头痛", ... },
+    "completion_pct": 45,
+    "assessment": null
+  }
+}
+```
+
+- `phase`：`collecting` 表示仍在采集信息，`completed` 表示已生成诊断报告。
+- `assessment`：当 `phase === "completed"` 时有值，为完整诊断分析报告文本。
+- 若该会话已完成问诊，再次发送消息会返回提示「本次问诊已完成」，并带 `assessment`，不会覆盖原报告。
+
+#### 获取会话状态
+
+```http
+GET /ai/doctor/session/<session_id>
+```
+
+**响应示例**
+
+```json
+{
+  "code": 0,
+  "msg": "ok",
+  "data": {
+    "session_id": "uuid-xxx",
+    "patient_info": { ... },
+    "phase": "collecting",
+    "turn_count": 3,
+    "completion_pct": 40,
+    "assessment": null
+  }
+}
+```
+
+- 会话不存在或未开始时返回 404，`msg` 为错误说明。
+
+---
+
 ## 三、LangGraph 图执行接口
 
 用于「循环/并行/路由」等演示图的 3D 可视化，数据形态与 Agent 对齐：图结构 + 步骤 + 最终状态。
@@ -294,6 +361,24 @@ Content-Type: application/json
 | loop      | `{ "query": "示例问题", "messages": [], "next_step": "", "iteration": 0, "response": "" }` |
 | parallel  | `{ "input_text": "示例文本", "analyses": [], "final_result": "", "response": "" }`；若只传 `query` 会映射到 `input_text` |
 
+**多轮对话**：`input` 中可附加 `history` 字段，传入历史对话轮次，router/loop/parallel 三种图均会将上文拼入 Prompt，实现多轮记忆：
+
+```json
+{
+  "graph": "router",
+  "input": {
+    "query": "那它的营业时间呢？",
+    "history": [
+      { "role": "user",      "content": "上海迪士尼乐园在哪里？" },
+      { "role": "assistant", "content": "上海迪士尼乐园位于浦东新区..." }
+    ]
+  }
+}
+```
+
+- `history` 为可选；不传时等同于单轮。
+- 后端最多取最近 50 条消息（约 25 轮）传入 LLM，拼入 Prompt 的上文默认取最近 20 轮。
+
 **响应示例（非流式）**
 
 ```json
@@ -309,12 +394,17 @@ Content-Type: application/json
     ],
     "finalState": { "messages": [ ... ], "iteration": 3, "query": "...", "response": "最终回答内容..." },
     "executionOrder": [ "think", "decide", "think", "decide", "respond" ],
-    "totalSteps": 5
+    "totalSteps": 5,
+    "totalNodes": 4,
+    "completedSteps": 5,
+    "executionProgress": 125.0,
+    "response": "最终回答内容..."
   }
 }
 ```
 
-- 最终回答：`data.finalState.response`。
+- 最终回答：`data.finalState.response` 或顶层 `data.response`（两者一致，`response` 是便捷字段）。
+- 执行监控：`data.totalNodes`（图中节点总数）、`data.completedSteps`（完成步数）、`data.executionProgress`（完成百分比，step/node 比，loop 类图可能超过 100%）。
 - 步骤：`data.steps` 含 `stepIndex`、`nodeId`、`label`；loop 图还有 `iteration`、`thought`、`nextStep` 等。
 
 ---
@@ -325,12 +415,12 @@ Content-Type: application/json
 
 **事件顺序**：init → step（多条）→ done → 结束 `data: [DONE]\n\n`；出错时发 **error**。
 
-- **init**：`{ "type": "init", "graphData": { "nodes", "edges" } }`
+- **init**：`{ "type": "init", "graphData": { "nodes", "edges" }, "totalNodes": 4 }`
 - **step**：`{ "type": "step", "step": { stepIndex, nodeId, status, duration_ms, output, label, ... } }`
-- **done**：`{ "type": "done", "finalState", "steps", "executionOrder", "totalSteps" }`
+- **done**：`{ "type": "done", "finalState", "steps", "executionOrder", "totalSteps", "totalNodes", "completedSteps", "executionProgress", "response" }`
 - **error**：`{ "type": "error", "error": "..." }`
 
-**前端建议**：与 Agent 一致——init 画图，step 更新步骤与进度，**done 后再展示 `finalState.response`**。
+**前端建议**：与 Agent 一致——init 画图（此时可用 `totalNodes` 初始化进度条），step 更新步骤高亮，**done 后再展示 `response`**（`finalState.response` 的快捷引用）。
 
 ---
 
@@ -370,7 +460,8 @@ Content-Type: application/json
 
 - **总步数**：`totalSteps`（与 `steps.length` 一致）。
 - **当前步**：第 n 步对应 `stepIndex === n - 1`。
-- **进度**：`(stepIndex + 1) / totalSteps`。
+- **进度（基于步骤）**：`(stepIndex + 1) / totalSteps`。
+- **执行监控（LangGraph 专用）**：`totalNodes`（图节点总数）、`completedSteps`（已完成步数，含循环节点多次执行）、`executionProgress`（completedSteps / totalNodes × 100，loop 图可超过 100%，建议以 `min(executionProgress, 100)` 展示）。
 
 ---
 
@@ -498,6 +589,16 @@ const runGraph = async (graphName, queryOrInput) => {
 | Agent 图结构   | GET  | /ai/agent/schema      | -          | -        | -              |
 | Agent 执行     | POST | /ai/agent/run         | finalState | steps    | stream: true → SSE |
 | LangGraph 图结构 | GET  | /ai/langgraph/graph   | -          | -        | -              |
-| LangGraph 执行 | POST | /ai/langgraph/run     | finalState | steps    | stream: true → SSE |
+| LangGraph 执行 | POST | /ai/langgraph/run     | finalState + 执行监控字段 | steps | stream: true → SSE |
+| 医生智能体对话 | POST | /ai/doctor/chat       | phase/assessment | -    | -（多轮会话）  |
+| 医生会话状态   | GET  | /ai/doctor/session/:id | phase/patient_info | -   | -              |
 
-前端可统一：**用 graphData 画图 → 用 steps 驱动步骤/进度 → 用 finalState.response 展示最终回答**；流式时先处理 step 再在 done 后展示 response，保证「先步骤、后答案」的体验。
+前端可统一：**用 graphData 画图 → 用 steps 驱动步骤/进度 → 用 finalState.response（或顶层 `response`）展示最终回答**；流式时先处理 step 再在 done 后展示 response，保证「先步骤、后答案」的体验。LangGraph 额外提供 `totalNodes`/`completedSteps`/`executionProgress` 用于执行监控仪表盘。
+
+---
+
+## 变更记录
+
+| 日期 | 变更说明 |
+|------|----------|
+| 2026-03-11 | 新增医生智能体接口（2.5）；补充 LangGraph 执行监控字段（totalNodes/completedSteps/executionProgress/response）；新增多轮对话 history 支持说明；更新接口一览表与数据字段速查。 |

@@ -45,7 +45,7 @@ env/
 logs/
 *.log.*
 
-# Gunicorn
+# Runtime PID files
 *.pid
 
 # frp 客户端配置（含 ECS 地址/token，勿提交）

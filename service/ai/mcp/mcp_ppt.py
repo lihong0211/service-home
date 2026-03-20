@@ -13,6 +13,11 @@ from typing import Any, Iterator, List, Optional, Tuple
 import dashscope
 from qwen_agent.agents import Assistant
 
+from fastapi import Request
+from fastapi.responses import StreamingResponse
+
+from utils.http_body import query_dict, read_json_optional
+
 _SSL_RETRY_COUNT = 3
 _SSL_RETRY_DELAY = 1.5  # seconds, doubles each attempt
 
@@ -461,23 +466,21 @@ def _try_save_ppt_record(steps: list, final_answer: str, prompt: str) -> None:
         print(f"[PptRecord] 写入失败: {e}", flush=True)
 
 
-# ---------- Flask 视图（供 routes 直接注册）----------
+# ---------- HTTP 视图（供 routes 注册）----------
 
-def mcp_ppt_info_api():
-    from flask import jsonify
+async def mcp_ppt_info_api(request: Request):
     try:
         data = get_mcp_ppt_info()
-        return jsonify({"code": 0, "msg": "ok", "data": data})
+        return {"code": 0, "msg": "ok", "data": data}
     except Exception as e:
-        return jsonify({"code": 500, "msg": str(e), "data": None}), 500
+        return ({"code": 500, "msg": str(e), "data": None}, 500)
 
 
-def mcp_ppt_chat_api():
-    from flask import request, jsonify
-    body = request.get_json() or {}
+async def mcp_ppt_chat_api(request: Request):
+    body = (await read_json_optional(request)) or {}
     messages = body.get("messages", [])
     if not messages:
-        return jsonify({"code": 400, "msg": "请提供 messages", "data": None}), 400
+        return ({"code": 400, "msg": "请提供 messages", "data": None}, 400)
     try:
         out = run_mcp_ppt_chat(
             messages,
@@ -485,46 +488,46 @@ def mcp_ppt_chat_api():
             system_message=body.get("system_message"),
         )
         if out.get("error"):
-            return jsonify({"code": 500, "msg": out["error"], "data": out}), 500
-        return jsonify({"code": 0, "msg": "ok", "data": out})
+            return ({"code": 500, "msg": out["error"], "data": out}, 500)
+        return {"code": 0, "msg": "ok", "data": out}
     except Exception as e:
-        return jsonify({"code": 500, "msg": str(e), "data": None}), 500
+        return ({"code": 500, "msg": str(e), "data": None}, 500)
 
 
-def mcp_ppt_chat_stream_api():
-    from flask import request, jsonify, Response, stream_with_context
-    body = request.get_json() or {}
+async def mcp_ppt_chat_stream_api(request: Request):
+    body = (await read_json_optional(request)) or {}
     messages = body.get("messages", [])
     if not messages:
-        return jsonify({"code": 400, "msg": "请提供 messages", "data": None}), 400
+        return ({"code": 400, "msg": "请提供 messages", "data": None}, 400)
     try:
         def generate():
             for line in run_mcp_ppt_chat_stream(messages):
                 yield line
-        return Response(
-            stream_with_context(generate()),
-            mimetype="application/x-ndjson",
+        return StreamingResponse(
+            generate(),
+            media_type="application/x-ndjson",
             headers={"X-Accel-Buffering": "no"},
         )
     except Exception as e:
-        return jsonify({"code": 500, "msg": str(e), "data": None}), 500
+        return ({"code": 500, "msg": str(e), "data": None}, 500)
 
 
-def mcp_ppt_status_api():
+async def mcp_ppt_status_api(request: Request):
     """GET /ai/mcp-ppt/status?ppt_id=xxx
     直接查询 PPT 生成进度，status: 1=生成中, 2=成功, 3=失败。
     """
-    from flask import request, jsonify
-    ppt_id = request.args.get("ppt_id") or (request.get_json(silent=True) or {}).get("ppt_id")
+    q = query_dict(request)
+    body = (await read_json_optional(request)) or {}
+    ppt_id = q.get("ppt_id") or body.get("ppt_id")
     if not ppt_id:
-        return jsonify({"code": 400, "msg": "请提供 ppt_id"}), 400
+        return ({"code": 400, "msg": "请提供 ppt_id"}, 400)
     try:
         data = query_ppt_status(ppt_id)
         # 同步更新本地记录（状态/标题/页数/preview_url）
         _sync_ppt_record(ppt_id, data)
-        return jsonify({"code": 0, "msg": "ok", "data": data})
+        return {"code": 0, "msg": "ok", "data": data}
     except Exception as e:
-        return jsonify({"code": 500, "msg": str(e)}), 500
+        return ({"code": 500, "msg": str(e)}, 500)
 
 
 def _sync_ppt_record(ppt_id: str, api_data: dict) -> None:
@@ -554,46 +557,47 @@ def _sync_ppt_record(ppt_id: str, api_data: dict) -> None:
         pass
 
 
-def mcp_ppt_download_url_api():
+async def mcp_ppt_download_url_api(request: Request):
     """GET /ai/mcp-ppt/download-url?ppt_id=xxx
     获取 PPT 下载地址（需 status=2 完成后调用）。
     """
-    from flask import request, jsonify
-    ppt_id = request.args.get("ppt_id") or (request.get_json(silent=True) or {}).get("ppt_id")
+    q = query_dict(request)
+    body = (await read_json_optional(request)) or {}
+    ppt_id = q.get("ppt_id") or body.get("ppt_id")
     if not ppt_id:
-        return jsonify({"code": 400, "msg": "请提供 ppt_id"}), 400
+        return ({"code": 400, "msg": "请提供 ppt_id"}, 400)
     try:
         data = get_ppt_download_url(ppt_id)
-        return jsonify({"code": 0, "msg": "ok", "data": data})
+        return {"code": 0, "msg": "ok", "data": data}
     except Exception as e:
-        return jsonify({"code": 500, "msg": str(e)}), 500
+        return ({"code": 500, "msg": str(e)}, 500)
 
 
-def mcp_ppt_download_proxy_api():
+async def mcp_ppt_download_proxy_api(request: Request):
     """GET /ai/mcp-ppt/download?ppt_id=xxx&out_trade_no=xxx
     通过后端代理将 PPT 文件流式传输给客户端，客户端直接触发浏览器下载。
     需携带已支付的 out_trade_no，否则返回支付引导。
     """
     import requests as req
-    from flask import request, jsonify, Response, stream_with_context
     from model.payment.pay_order import PayOrder
 
-    ppt_id = request.args.get("ppt_id")
-    out_trade_no = request.args.get("out_trade_no")
+    q = query_dict(request)
+    ppt_id = q.get("ppt_id")
+    out_trade_no = q.get("out_trade_no")
 
     if not ppt_id:
-        return jsonify({"code": 400, "msg": "请提供 ppt_id"}), 400
+        return ({"code": 400, "msg": "请提供 ppt_id"}, 400)
 
     # 支付核验
     if not out_trade_no:
-        return jsonify({"code": 402, "msg": "请先完成支付，传入 out_trade_no"}), 402
+        return ({"code": 402, "msg": "请先完成支付，传入 out_trade_no"}, 402)
 
     order = PayOrder.select_one_by({"out_trade_no": out_trade_no, "biz_id": ppt_id})
     if not order:
-        return jsonify({"code": 404, "msg": "订单不存在"}), 404
+        return ({"code": 404, "msg": "订单不存在"}, 404)
     if order.status != 2:
         status_hint = {0: "请先完成微信扫码付款", 1: "付款审核中，请稍候（通常几分钟内）", 3: "订单已关闭"}
-        return jsonify({"code": 402, "msg": status_hint.get(order.status, "订单未确认")}), 402
+        return ({"code": 402, "msg": status_hint.get(order.status, "订单未确认")}, 402)
 
     try:
         url_resp = get_ppt_download_url(ppt_id)
@@ -605,44 +609,45 @@ def mcp_ppt_download_proxy_api():
             or raw.get("ppt_url")
         ) if isinstance(raw, dict) else None
         if not download_url:
-            return jsonify({"code": 400, "msg": "PPT 尚未生成完成或无下载地址", "raw": url_resp}), 400
+            return ({"code": 400, "msg": "PPT 尚未生成完成或无下载地址", "raw": url_resp}, 400)
         r = req.get(download_url, stream=True, timeout=120)
         r.raise_for_status()
         filename = f"{ppt_id}.pptx"
-        return Response(
-            stream_with_context(r.iter_content(chunk_size=8192)),
-            content_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        return StreamingResponse(
+            r.iter_content(chunk_size=8192),
+            media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
     except Exception as e:
-        return jsonify({"code": 500, "msg": str(e)}), 500
+        return ({"code": 500, "msg": str(e)}, 500)
 
 
-def mcp_ppt_editor_url_api():
+async def mcp_ppt_editor_url_api(request: Request):
     """GET /ai/mcp-ppt/editor?ppt_id=xxx
     获取 PPT 在线编辑器地址。
     """
-    from flask import request, jsonify
-    ppt_id = request.args.get("ppt_id") or (request.get_json(silent=True) or {}).get("ppt_id")
+    q = query_dict(request)
+    body = (await read_json_optional(request)) or {}
+    ppt_id = q.get("ppt_id") or body.get("ppt_id")
     if not ppt_id:
-        return jsonify({"code": 400, "msg": "请提供 ppt_id"}), 400
+        return ({"code": 400, "msg": "请提供 ppt_id"}, 400)
     try:
         data = get_ppt_editor_url(ppt_id)
-        return jsonify({"code": 0, "msg": "ok", "data": data})
+        return {"code": 0, "msg": "ok", "data": data}
     except Exception as e:
-        return jsonify({"code": 500, "msg": str(e)}), 500
+        return ({"code": 500, "msg": str(e)}, 500)
 
 
-def mcp_ppt_history_api():
+async def mcp_ppt_history_api(request: Request):
     """GET /ai/mcp-ppt/history?page=1&page_size=20
     查询本地 PPT 生成历史记录列表（按创建时间倒序）。
     """
-    from flask import request, jsonify
     from model.ai.ppt_record import PptRecord
     from app.app import db
 
-    page      = max(int(request.args.get("page", 1)), 1)
-    page_size = min(int(request.args.get("page_size", 20)), 100)
+    q = query_dict(request)
+    page      = max(int(q.get("page") or 1), 1)
+    page_size = min(int(q.get("page_size") or 20), 100)
     offset    = (page - 1) * page_size
 
     try:
@@ -663,7 +668,7 @@ def mcp_ppt_history_api():
                 return (r.prompt.strip()[:30] + "…") if len(r.prompt.strip()) > 30 else r.prompt.strip()
             return "PPT生成中"
 
-        return jsonify({
+        return {
             "code": 0,
             "msg": "ok",
             "data": {
@@ -684,6 +689,6 @@ def mcp_ppt_history_api():
                     for r in records
                 ],
             },
-        })
+        }
     except Exception as e:
-        return jsonify({"code": 500, "msg": str(e)}), 500
+        return ({"code": 500, "msg": str(e)}, 500)

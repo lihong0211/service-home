@@ -8,7 +8,8 @@ import os
 import tempfile
 from io import BytesIO
 
-from flask import request, send_file, jsonify
+from fastapi import Request
+from fastapi.responses import JSONResponse, StreamingResponse
 
 # 默认中文女声
 DEFAULT_VOICE = os.environ.get("TTS_VOICE", "zh-CN-XiaoxiaoNeural")
@@ -21,16 +22,29 @@ async def _generate_mp3(text: str, voice: str, path: str) -> None:
     await communicate.save(path)
 
 
-def speech():
+async def speech(request: Request):
     """
     文字转语音接口
 
     请求：application/json，body: { "text": "要读的文字", "voice": "zh-CN-..." 可选 }
     响应：audio/mpeg 文件（默认女声，可直接播放或下载）
     """
-    data = request.get_json(silent=True) or {}
-    text = data.get("text") or (request.form and request.form.get("text"))
-    voice = data.get("voice") or request.form.get("voice") or DEFAULT_VOICE
+    content_type = (request.headers.get("content-type") or "").lower()
+    data = {}
+    form = {}
+    if "application/json" in content_type:
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+    else:
+        try:
+            form = await request.form()
+        except Exception:
+            form = {}
+
+    text = data.get("text") or form.get("text")
+    voice = data.get("voice") or form.get("voice") or DEFAULT_VOICE
 
     if not text or not str(text).strip():
         raise ValueError("Missing text")
@@ -40,12 +54,7 @@ def speech():
     try:
         fd, tmp = tempfile.mkstemp(suffix=".mp3")
         os.close(fd)
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(_generate_mp3(text, voice, tmp))
-        finally:
-            loop.close()
+        await _generate_mp3(text, voice, tmp)
         with open(tmp, "rb") as f:
             buf = BytesIO(f.read())
         try:
@@ -53,11 +62,11 @@ def speech():
         except Exception:
             pass
         buf.seek(0)
-        return send_file(
+        # inline 播放；前端可自行决定是否下载
+        return StreamingResponse(
             buf,
-            mimetype="audio/mpeg",
-            as_attachment=False,
-            download_name="speech.mp3",
+            media_type="audio/mpeg",
+            headers={"Content-Disposition": 'inline; filename="speech.mp3"'},
         )
     except Exception as e:
         if tmp and os.path.exists(tmp):
@@ -65,4 +74,7 @@ def speech():
                 os.unlink(tmp)
             except Exception:
                 pass
-        return jsonify({"code": 500, "msg": str(e)}), 500
+        return JSONResponse(
+            content={"code": 500, "msg": str(e)},
+            status_code=500,
+        )

@@ -15,7 +15,7 @@ def get_datetime_now():
 class BaseModel:
     """基础模型类，提供通用的CRUD方法"""
 
-    query = db.session.query_property()
+    query = db.query_property()
     __tablename__ = "--"
     deleted_at_value = None
     id = Column(INTEGER(11), primary_key=True)

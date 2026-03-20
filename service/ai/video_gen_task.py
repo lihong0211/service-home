@@ -4,7 +4,10 @@
 import os
 from typing import Optional
 
+from fastapi import Request
+
 from app.app import db
+from utils.http_body import query_dict, read_json_optional
 from model.ai.video_gen_task import VideoGenTask
 
 
@@ -163,21 +166,19 @@ def list_tasks(
     }
 
 
-# ---------- Flask API 入口 ----------
+# ---------- HTTP API 入口 ----------
 
 
-def video_gen_task_create_api():
+async def video_gen_task_create_api(request: Request):
     """
     POST /ai/video-gen/tasks
     Body: { "task_id": "cgt-xxx", "prompt": "...", "model": "...", "resolution": "720p", "ratio": "16:9", "duration": 5, "source": "dify" }
     Dify 在提交文生视频任务后可调用此接口，将 task_id 写入数据库，便于后续查询。
     """
-    from flask import request, jsonify
-
-    data = request.get_json() or {}
+    data = await read_json_optional(request) or {}
     task_id = (data.get("task_id") or "").strip()
     if not task_id:
-        return jsonify({"code": 400, "msg": "缺少 task_id"}), 400
+        return ({"code": 400, "msg": "缺少 task_id"}, 400)
     try:
         out = create_task(
             task_id=task_id,
@@ -188,36 +189,33 @@ def video_gen_task_create_api():
             duration=data.get("duration"),
             source=data.get("source"),
         )
-        return jsonify({"code": 0, "msg": "ok", "data": out})
+        return {"code": 0, "msg": "ok", "data": out}
     except Exception as e:
-        return jsonify({"code": 500, "msg": str(e)}), 500
+        return ({"code": 500, "msg": str(e)}, 500)
 
 
-def video_gen_task_get_api(task_id: str):
+async def video_gen_task_get_api(request: Request, task_id: str):
     """
     GET /ai/video-gen/tasks/<task_id>?sync=1
     sync=1 时从火山方舟拉取最新状态并更新本地后返回（需配置 VOLCANO_ARK_API_KEY 或 ARK_API_KEY）。
     """
-    from flask import request, jsonify
-
     task_id = (task_id or "").strip()
     if not task_id:
-        return jsonify({"code": 400, "msg": "缺少 task_id"}), 400
-    sync = request.args.get("sync", "").lower() in ("1", "true", "yes")
+        return ({"code": 400, "msg": "缺少 task_id"}, 400)
+    sync = query_dict(request).get("sync", "").lower() in ("1", "true", "yes")
     out = get_task(task_id, sync_from_ark=sync)
     if out is None:
-        return jsonify({"code": 404, "msg": "任务不存在"}), 404
-    return jsonify({"code": 0, "msg": "ok", "data": out})
+        return ({"code": 404, "msg": "任务不存在"}, 404)
+    return {"code": 0, "msg": "ok", "data": out}
 
 
-def video_gen_task_list_api():
+async def video_gen_task_list_api(request: Request):
     """
     GET /ai/video-gen/tasks?page=1&page_size=20&status=succeeded
     """
-    from flask import request, jsonify
-
-    page = max(1, int(request.args.get("page", 1)))
-    page_size = min(100, max(1, int(request.args.get("page_size", 20))))
-    status = request.args.get("status", "").strip() or None
+    q = query_dict(request)
+    page = max(1, int(q.get("page", 1)))
+    page_size = min(100, max(1, int(q.get("page_size", 20))))
+    status = q.get("status", "").strip() or None
     out = list_tasks(page=page, page_size=page_size, status=status)
-    return jsonify({"code": 0, "msg": "ok", "data": out})
+    return {"code": 0, "msg": "ok", "data": out}

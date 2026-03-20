@@ -8,7 +8,8 @@ import base64
 import json
 import os
 import tempfile
-from flask import request, jsonify, Response, stream_with_context
+from fastapi import Request
+from fastapi.responses import StreamingResponse
 
 # 懒加载，首次请求时再加载模型
 _whisper_model = None
@@ -27,6 +28,27 @@ STT_CONFIG = {
     "beam_size": 5,
 }
 
+def _is_json_request(request: Request) -> bool:
+    content_type = (request.headers.get("content-type") or "").lower()
+    return "application/json" in content_type
+
+
+async def _read_json_body(request: Request) -> dict:
+    if not _is_json_request(request):
+        return {}
+    try:
+        return await request.json()
+    except Exception:
+        return {}
+
+
+async def _read_form_body(request: Request):
+    # multipart/form-data 或 x-www-form-urlencoded
+    try:
+        return await request.form()
+    except Exception:
+        return {}
+
 
 def _get_model():
     global _whisper_model
@@ -41,7 +63,7 @@ def _get_model():
     return _whisper_model
 
 
-def transcribe():
+async def transcribe(request: Request):
     """
     语音转文字接口
 
@@ -51,37 +73,46 @@ def transcribe():
     响应：{ "code": 0, "text": "完整文本", "language": "zh", "segments": [{ "start", "end", "text" }] }
     """
     audio_path = None
-    language = request.form.get("language") or (
-        request.get_json(silent=True) or {}
-    ).get("language")
+    if _is_json_request(request):
+        body = await _read_json_body(request)
+        form = {}
+    else:
+        form = await _read_form_body(request)
+        body = {}
+
+    language = (form.get("language") if form else None) or body.get("language")
     language = language or STT_CONFIG["language"]
 
     try:
         # 1. 文件上传
-        if request.files:
-            f = request.files.get("file") or request.files.get("audio")
-            if not f or not f.filename:
-                return (
-                    jsonify({"code": 400, "msg": "Missing file or audio in form"}),
-                    400,
-                )
+        if form:
+            f = form.get("file") or form.get("audio")
+            if not f or not getattr(f, "filename", None):
+                return ({"code": 400, "msg": "Missing file or audio in form"}, 400)
+
             suffix = os.path.splitext(f.filename)[1] or ".webm"
             fd, audio_path = tempfile.mkstemp(suffix=suffix)
             os.close(fd)
-            f.save(audio_path)
+            # starlette UploadFile 没有 save()，需要自己写入临时文件
+            with open(audio_path, "wb") as out:
+                while True:
+                    chunk = await f.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    out.write(chunk)
         # 2. base64
-        elif request.is_json:
-            data = request.get_json()
-            b64 = data.get("audio_base64") or data.get("audio")
+        elif body:
+            b64 = body.get("audio_base64") or body.get("audio")
             if not b64:
                 raise ValueError("Missing audio_base64 or audio in body")
-            raw = base64.b64decode(b64)
             suffix = ".wav"
             if isinstance(b64, str) and b64.startswith("data:"):
                 # data:audio/webm;base64,xxx
                 raw = base64.b64decode(b64.split(",", 1)[-1])
-                if "webm" in (data.get("audio_base64") or "")[:50]:
+                if "webm" in b64[:50]:
                     suffix = ".webm"
+            else:
+                raw = base64.b64decode(b64)
             fd, audio_path = tempfile.mkstemp(suffix=suffix)
             os.close(fd)
             with open(audio_path, "wb") as out:
@@ -103,15 +134,13 @@ def transcribe():
 
         lang = getattr(info, "language", None)
         lang_prob = getattr(info, "language_probability", None)
-        return jsonify(
-            {
-                "code": 0,
-                "text": text,
-                "language": lang,
-                "language_probability": lang_prob,
-                "segments": segments_list,
-            }
-        )
+        return {
+            "code": 0,
+            "text": text,
+            "language": lang,
+            "language_probability": lang_prob,
+            "segments": segments_list,
+        }
     finally:
         if audio_path and os.path.exists(audio_path):
             try:
@@ -120,20 +149,31 @@ def transcribe():
                 pass
 
 
-def _get_audio_path_from_request():
+async def _get_audio_path_from_request(request: Request):
     """从请求中解析出临时音频文件路径，调用方负责删除。"""
-    if request.files:
-        f = request.files.get("file") or request.files.get("audio")
-        if not f or not f.filename:
+    if _is_json_request(request):
+        body = await _read_json_body(request)
+        form = {}
+    else:
+        form = await _read_form_body(request)
+        body = {}
+
+    if form:
+        f = form.get("file") or form.get("audio")
+        if not f or not getattr(f, "filename", None):
             return None, "Missing file or audio"
         suffix = os.path.splitext(f.filename)[1] or ".webm"
         fd, path = tempfile.mkstemp(suffix=suffix)
         os.close(fd)
-        f.save(path)
+        with open(path, "wb") as out:
+            while True:
+                chunk = await f.read(1024 * 1024)
+                if not chunk:
+                    break
+                out.write(chunk)
         return path, None
-    if request.is_json:
-        data = request.get_json()
-        b64 = data.get("audio_base64") or data.get("audio")
+    if body:
+        b64 = body.get("audio_base64") or body.get("audio")
         if not b64:
             return None, "Missing audio_base64 or audio"
         raw = base64.b64decode(
@@ -150,20 +190,23 @@ def _get_audio_path_from_request():
     return None, "Send multipart file or JSON with audio_base64"
 
 
-def transcribe_stream():
+async def transcribe_stream(request: Request):
     """
     实时流式转录：一次上传一段音频，按识别出的片段 SSE 推送。
     请求同 transcribe（file 或 audio_base64），响应为 SSE：
     data: {"text": "...", "start": 0.0, "end": 1.2}
     data: [DONE]
     """
-    language = (
-        request.form.get("language")
-        or (request.get_json(silent=True) or {}).get("language")
-        or STT_CONFIG["language"]
-    )
+    if _is_json_request(request):
+        body = await _read_json_body(request)
+        form = {}
+    else:
+        form = await _read_form_body(request)
+        body = {}
 
-    audio_path, err = _get_audio_path_from_request()
+    language = (form.get("language") if form else None) or body.get("language") or STT_CONFIG["language"]
+
+    audio_path, err = await _get_audio_path_from_request(request)
     if err:
         raise ValueError(err)
 
@@ -190,8 +233,8 @@ def transcribe_stream():
                 except Exception:
                     pass
 
-    return Response(
-        stream_with_context(generate()),
+    return StreamingResponse(
+        generate(),
         mimetype="text/event-stream; charset=utf-8",
         headers={
             "Cache-Control": "no-cache",
@@ -256,3 +299,55 @@ def register_stt_ws(sock):
                         os.unlink(audio_path)
                     except Exception:
                         pass
+
+
+async def register_stt_ws_fastapi(websocket):
+    """FastAPI WebSocket：/api/ai/stt/live，与 register_stt_ws 逻辑一致。"""
+    language = None
+    while True:
+        try:
+            msg = await websocket.receive_text()
+        except Exception:
+            break
+        if isinstance(msg, str) and msg.strip().startswith("{"):
+            try:
+                data = json.loads(msg)
+                b64 = data.get("audio_base64") or data.get("audio")
+                language = data.get("language") or language or STT_CONFIG["language"]
+            except Exception:
+                await websocket.send_text(json.dumps({"error": "Invalid JSON"}))
+                continue
+        else:
+            b64 = msg
+        if not b64:
+            await websocket.send_text(json.dumps({"error": "Missing audio"}))
+            continue
+        audio_path = None
+        try:
+            raw = base64.b64decode(
+                b64.split(",", 1)[-1]
+                if isinstance(b64, str) and "base64," in b64
+                else b64
+            )
+            fd, audio_path = tempfile.mkstemp(suffix=".wav")
+            os.close(fd)
+            with open(audio_path, "wb") as f:
+                f.write(raw)
+            model = _get_model()
+            segments_iter, _ = model.transcribe(
+                audio_path,
+                language=language,
+                vad_filter=STT_CONFIG["vad_filter"],
+                beam_size=3,
+            )
+            text = "".join(s.text for s in segments_iter).strip()
+            if text:
+                await websocket.send_text(json.dumps({"text": text}, ensure_ascii=False))
+        except Exception as e:
+            await websocket.send_text(json.dumps({"error": str(e)}))
+        finally:
+            if audio_path and os.path.exists(audio_path):
+                try:
+                    os.unlink(audio_path)
+                except Exception:
+                    pass

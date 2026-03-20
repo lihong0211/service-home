@@ -132,7 +132,7 @@ new_index.add_with_ids(vectors_np, vector_ids_np)
 
 **决策 3：进程内 `_db_cache`**  
 原因：`faiss.read_index` 是 I/O 密集操作，RAG 场景每次问答都检索同一知识库，不能每次重新读盘。  
-代价：多进程部署（如 Gunicorn 多 worker）时各 worker 缓存独立，一个 worker 写入后其他 worker 缓存不自动失效。  
+代价：多进程部署（如 uvicorn 多 worker）时各 worker 缓存独立，一个 worker 写入后其他 worker 缓存不自动失效。  
 当前状态：项目单进程运行，此问题暂不存在；若引入多进程，需增加基于文件 mtime 或 Redis 的缓存失效机制。
 
 ---

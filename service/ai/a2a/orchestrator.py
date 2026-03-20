@@ -17,6 +17,11 @@ from typing import Generator
 
 import requests
 
+from fastapi import Request
+from fastapi.responses import StreamingResponse
+
+from utils.http_body import read_json_optional
+
 from service.ai.a2a.schemas import (
     A2AArtifact, ChainStep, DataPart, Message, OrchestrationResult,
     SendMessageRequest, Task, TaskStatus, TextPart,
@@ -381,36 +386,32 @@ def get_result_for_frontend(topic: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Flask 视图：供 routes/ai 注册 POST
+# HTTP 视图：供 routes/ai 注册 POST
 # ---------------------------------------------------------------------------
 
 
-def a2a_chain_api():
+async def a2a_chain_api(request: Request):
     """POST /ai/a2a/chain 执行 A2A 内容生成链，返回 chain + artifacts + final_artifact，供前端展示。"""
-    from flask import request, jsonify
-
-    body = request.get_json() or {}
+    body = (await read_json_optional(request)) or {}
     topic = body.get("topic", "").strip()
     if not topic:
-        return jsonify({"code": 400, "msg": "缺少参数: topic", "data": None}), 400
+        return ({"code": 400, "msg": "缺少参数: topic", "data": None}, 400)
     try:
         data = get_result_for_frontend(topic)
-        return jsonify({"code": 0, "msg": "ok", "data": data})
+        return {"code": 0, "msg": "ok", "data": data}
     except Exception as e:
-        return jsonify({"code": 500, "msg": str(e), "data": None}), 500
+        return ({"code": 500, "msg": str(e), "data": None}, 500)
 
 
-def a2a_chain_stream_api():
+async def a2a_chain_stream_api(request: Request):
     """POST /ai/a2a/chain/stream  SSE 流式接口：每完成一个 Agent 步骤推送一条事件。"""
-    from flask import request, Response, jsonify, stream_with_context
-
-    body = request.get_json() or {}
+    body = (await read_json_optional(request)) or {}
     topic = body.get("topic", "").strip()
     if not topic:
-        return jsonify({"code": 400, "msg": "缺少参数: topic", "data": None}), 400
-    return Response(
-        stream_with_context(stream_chain(topic)),
-        mimetype="text/event-stream; charset=utf-8",
+        return ({"code": 400, "msg": "缺少参数: topic", "data": None}, 400)
+    return StreamingResponse(
+        stream_chain(topic),
+        media_type="text/event-stream; charset=utf-8",
         headers={
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",

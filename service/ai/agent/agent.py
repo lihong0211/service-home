@@ -12,6 +12,9 @@ from __future__ import annotations
 import time
 from typing import Any, Optional
 
+from fastapi import Request
+from fastapi.responses import StreamingResponse
+
 from service.ai.agent.agent_fund_qa import create_fund_qa_agent
 from service.ai.agent.agent_research import (
     create_research_agent_workflow,
@@ -22,6 +25,8 @@ from service.ai.agent.agent_wealth_advisor import (
     WEALTH_NODE_DISPLAY,
 )
 from service.ai.langchain import graph_to_schema
+
+from utils.http_body import query_dict, read_json_optional
 
 # 智能体构建器映射
 AGENT_BUILDERS = {
@@ -420,46 +425,39 @@ def run_agent_stream_yield_events(agent_id: str, input_data: Optional[dict] = No
 
 
 # ---------------------------------------------------------------------------
-# Flask 视图：供 routes/ai 注册 GET/POST
+# HTTP 视图：供 routes/ai 注册 GET/POST
 # ---------------------------------------------------------------------------
 
 
-def agent_list_api():
+async def agent_list_api(request: Request):
     """GET /ai/agent/list 返回所有可用的智能体列表（含元信息）。"""
-    from flask import jsonify
-
     agents = list_agents()
-    return jsonify({"code": 0, "msg": "ok", "data": agents})
+    return {"code": 0, "msg": "ok", "data": agents}
 
 
-def agent_schema_api():
+async def agent_schema_api(request: Request):
     """GET /ai/agent/schema?agent_id=research_agent 返回智能体的图结构，供前端 3D 可视化。"""
-    from flask import request, jsonify
-
-    agent_id = request.args.get("agent_id") or "research_agent"
+    q = query_dict(request)
+    agent_id = q.get("agent_id") or "research_agent"
     schema = get_agent_schema(agent_id)
     if schema is None:
         return (
-            jsonify(
-                {
-                    "code": 400,
-                    "msg": f"未知智能体: {agent_id}",
-                    "data": {"allowed": list(list_agents().keys())},
-                }
-            ),
+            {
+                "code": 400,
+                "msg": f"未知智能体: {agent_id}",
+                "data": {"allowed": list(list_agents().keys())},
+            },
             400,
         )
-    return jsonify({"code": 0, "msg": "ok", "data": schema})
+    return {"code": 0, "msg": "ok", "data": schema}
 
 
-def agent_run_api():
+async def agent_run_api(request: Request):
     """
     POST /ai/agent/run 执行智能体并返回步骤与最终状态，供前端按真实执行顺序驱动 3D 动画。
     与 langchain run 对齐：支持 stream=true 时走 SSE，先发 init（graphData），再逐步 step，最后 done（含 finalState、steps、totalSteps）。
     """
-    from flask import request, jsonify, Response, stream_with_context
-
-    body = request.get_json() or {}
+    body = (await read_json_optional(request)) or {}
     agent_id = body.get("agent_id") or "research_agent"
     input_data = body.get("input")
     stream = body.get("stream", False)
@@ -484,13 +482,13 @@ def agent_run_api():
             except Exception as e:
                 yield f"data: {_json.dumps({'type': 'error', 'error': str(e)}, ensure_ascii=False)}\n\n"
 
-        return Response(
-            stream_with_context(gen()),
-            mimetype="text/event-stream; charset=utf-8",
+        return StreamingResponse(
+            gen(),
+            media_type="text/event-stream; charset=utf-8",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
         )
 
     out = run_agent_and_collect_steps(agent_id, input_data)
     if out.get("error"):
-        return jsonify({"code": 400, "msg": out["error"], "data": out}), 400
-    return jsonify({"code": 0, "msg": "ok", "data": out})
+        return ({"code": 400, "msg": out["error"], "data": out}, 400)
+    return {"code": 0, "msg": "ok", "data": out}
