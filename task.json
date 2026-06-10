@@ -92,7 +92,7 @@
       "id": 5,
       "name": "Mixture of Agents",
       "description": "同一问题并发发给多个本地 Ollama 模型，各自独立回答，再由 DashScope qwen-turbo 聚合最优答案，前端并排展示各模型回答和聚合结果。",
-      "passes": false,
+      "passes": true,
       "e2e_test": "1) 页面加载后，模型选择区应显示可用模型列表，勾选至少2个；2) 输入问题 '用一句话解释什么是 RAG'，点击发送；3) 等待各模型回答卡片出现，截图确认显示多个模型名称和各自回答；4) 确认底部聚合结果区出现综合回答",
       "backend_steps": [
         "创建 service/ai/mixture_agents.py：list_models_api(request) 调用 Ollama GET http://localhost:11434/api/tags 返回模型列表；mixture_chat_api(request) 接受 {question, models:[...]}，asyncio.gather 并发调用各 Ollama 模型，收集回答后用 DashScope qwen-turbo 综合，流式返回最终答案（同时在首个 chunk 里附带各模型原始回答供前端展示）",
@@ -110,7 +110,7 @@
       "id": 6,
       "name": "简历与职位匹配",
       "description": "用户上传简历 PDF + 输入职位描述，AI 提取简历信息与 JD 对比，输出匹配分数和建议，前端展示分析报告。",
-      "passes": false,
+      "passes": true,
       "e2e_test": "1) 上传测试简历：/Users/lihong/Desktop/personal/code/service-home/test-fixtures/sample_resume.pdf；2) 在 JD 输入框粘贴以下内容：'We are looking for a Senior Python Engineer with 5+ years experience in FastAPI, distributed systems, and AI/ML. Must have experience with LLM APIs and vector databases.'；3) 点击分析按钮，等待结果；4) 截图确认：匹配分数为数字（0-100）、优势/差距/建议列表非空",
       "backend_steps": [
         "创建 service/ai/resume_matcher.py：resume_match_api(request) 接受 multipart（resume_pdf 文件 + job_description 文本字段），PyPDF2 解析 PDF，DashScope qwen-turbo 分两步处理：1）提取结构化简历（教育/经历/技能），2）与 JD 对比生成分析，返回 {score:int, strengths:[str], gaps:[str], suggestions:[str], resume_summary:str}",
@@ -128,7 +128,7 @@
       "id": 7,
       "name": "AI新闻摘要Agent",
       "description": "从预置 RSS 源抓取科技/AI 新闻，LLM 生成中文摘要和今日要闻总结，前端展示新闻聚合面板。",
-      "passes": false,
+      "passes": true,
       "e2e_test": "1) 页面加载时应自动请求数据，等待 loading 完成（最多30秒）；2) 截图确认：顶部今日要闻总结卡片显示非空文字，下方新闻列表至少显示3篇文章（各有标题和摘要）；3) 点击刷新按钮确认重新加载不报错",
       "backend_steps": [
         "安装依赖：pip install feedparser",
@@ -147,7 +147,7 @@
       "id": 8,
       "name": "网页智能提取Agent",
       "description": "用户输入 URL，AI 抓取网页正文并提取结构化信息，支持自定义提取字段，前端展示提取结果。",
-      "passes": false,
+      "passes": true,
       "e2e_test": "1) 在 URL 输入框输入 https://www.anthropic.com，点击提取按钮，等待结果；2) 截图确认结果区显示 title 非空、word_count 大于0、extracted 字段有内容；3) 展开自定义 Schema，添加字段 'main_product'='公司主要产品名称'，再次提取，确认结果包含该字段",
       "backend_steps": [
         "安装依赖：pip install newspaper3k lxml_html_clean",

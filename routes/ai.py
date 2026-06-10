@@ -106,6 +106,10 @@ from service.ai.data_analysis import upload_data_file_api, query_data_api
 from service.ai.github_chat import github_index_api, github_ask_api
 from service.ai.youtube_chat import youtube_index_api, youtube_ask_api
 from service.ai.memory_chat import memory_chat_api, list_memories_api, clear_memories_api
+from service.ai.mixture_agents import list_models_api, mixture_chat_api
+from service.ai.resume_matcher import resume_match_api
+from service.ai.news_agent import fetch_articles_api, news_summary_api
+from service.ai.web_scraper import web_scrape_extract_api
 
 
 async def _dispatch_ai_view(view, request: Request, **path_kwargs):
@@ -310,3 +314,9 @@ def register_ai(router: APIRouter):
     _ai_route(router, "/ai/memory-chat/chat", memory_chat_api, ["POST"])
     _ai_route(router, "/ai/memory-chat/memories", list_memories_api, ["GET"])
     _ai_route(router, "/ai/memory-chat/memories", clear_memories_api, ["DELETE"])
+    _ai_route(router, "/ai/mixture-agents/models", list_models_api, ["GET"])
+    _ai_route(router, "/ai/mixture-agents/chat", mixture_chat_api, ["POST"])
+    _ai_route(router, "/ai/resume-match", resume_match_api, ["POST"])
+    _ai_route(router, "/ai/news/articles", fetch_articles_api, ["GET"])
+    _ai_route(router, "/ai/news/summary", news_summary_api, ["GET"])
+    _ai_route(router, "/ai/web-scraper/extract", web_scrape_extract_api, ["POST"])
