@@ -73,7 +73,7 @@
       "id": 4,
       "name": "对话持久记忆",
       "description": "对话系统增加用户级持久记忆，AI 记住用户重要信息并在后续对话中自动引用，前端展示聊天界面和记忆面板。",
-      "passes": false,
+      "passes": true,
       "e2e_test": "1) 在用户ID框输入 e2e_test_user，发送消息 '我叫张伟，我是一名 Python 工程师，我喜欢 LLM 开发'，等待回复；2) 右侧记忆面板应出现新记忆条目，截图；3) 再发送消息 '你还记得我的名字吗？'，确认回复中包含 '张伟' 或 'Python'",
       "backend_steps": [
         "创建 model/ai/chat_memory.py：ORM 模型，字段 id/user_id(String 64, index)/content(Text)/memory_type(String 20)/created_at，继承 BaseModel",
