@@ -55,3 +55,10 @@ models/
 dataset/
 lora/
 
+# Playwright MCP output（截图、快照、日志）
+.playwright-mcp/
+
+# 知识库预览缓存 & 测试向量库
+data/knowledge_base/.preview_cache/
+data/vector_dbs/test/
+
