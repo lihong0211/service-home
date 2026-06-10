@@ -10,3 +10,9 @@
 ### 测试结果：后端 curl 上传CSV成功返回 session_id/columns/preview，curl query 自然语言"What is the average salary by department?"生成正确SQL并返回数据；前端 npm run build 无TS错误，Playwright截图确认页面正常渲染，菜单高亮Data Analysis
 ### 注意事项：DuckDB session存内存dict，重启后丢失需重传文件；DASHSCOPE_API_KEY 在系统env中（非.env文件），部署时需注意
 
+
+## [2026-06-10] - Task 2: Chat with GitHub
+### 后端实现：service/ai/github_chat.py（ZIP下载+批量embedding+Qdrant存储+流式RAG问答），routes/ai.py新增两条路由
+### 前端实现：src/service/github-chat.ts、src/pages/GitHubChat.tsx，routes.tsx和MainLayout.tsx各新增一项
+### 测试结果：索引 anthropics/anthropic-quickstarts 成功（50文件/150片段），问"What is this repository about?"流式回答包含quickstart/anthropic相关内容
+### 注意事项：使用ZIP下载替代PyGithub API（避免速率限制）；qdrant-client 1.17+ 需用 query_points 替代 search；DashScope text-embedding-v4 批量上限为10条；默认限制50文件/150chunk保证60秒内完成

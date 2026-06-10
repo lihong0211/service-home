@@ -103,6 +103,7 @@ from service.ai.finetuning.finetuning import finetuning_chat_api, list_lora_opti
 from service.ai.docs import service_ai_doc_api
 from service.ai.agent.agent_doctor import doctor_chat_api, doctor_session_api
 from service.ai.data_analysis import upload_data_file_api, query_data_api
+from service.ai.github_chat import github_index_api, github_ask_api
 
 
 async def _dispatch_ai_view(view, request: Request, **path_kwargs):
@@ -300,3 +301,5 @@ def register_ai(router: APIRouter):
     _ai_route(router, "/ai/docs/{doc_id}", service_ai_doc_api, ["GET"], ["doc_id"], {"doc_id": int})
     _ai_route(router, "/ai/data-analysis/upload", upload_data_file_api, ["POST"])
     _ai_route(router, "/ai/data-analysis/query", query_data_api, ["POST"])
+    _ai_route(router, "/ai/github-chat/index", github_index_api, ["POST"])
+    _ai_route(router, "/ai/github-chat/ask", github_ask_api, ["POST"])
