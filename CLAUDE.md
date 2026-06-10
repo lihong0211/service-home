@@ -233,15 +233,17 @@ npm run build  # TypeScript 必须无错误
 **先将 task.json 中对应任务的 `passes` 改为 `true`，然后分别提交：**
 
 ```bash
-# 提交后端
+# 提交并推送后端
 cd /Users/lihong/Desktop/personal/code/service-home
 git add .
 git commit -m "feat: [Task {id}] {任务名称} - 后端实现"
+git push
 
-# 提交前端
+# 提交并推送前端
 cd /Users/lihong/Desktop/personal/code/ai-dashboard
 git add .
 git commit -m "feat: [Task {id}] {任务名称} - 前端实现"
+git push
 ```
 
 **规则：task.json 的 passes 更新放在 service-home 的 commit 里。**
