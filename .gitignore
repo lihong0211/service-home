@@ -58,6 +58,9 @@ lora/
 # Playwright MCP output（截图、快照、日志）
 .playwright-mcp/
 
+# 测试截图（E2E 运行产物）
+test-fixtures/screenshots/
+
 # 知识库预览缓存 & 测试向量库
 data/knowledge_base/.preview_cache/
 data/vector_dbs/test/
