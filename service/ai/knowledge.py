@@ -5,7 +5,7 @@
 - 知识库 CRUD、文档与分类管理
 - 支持 PDF/DOCX/PPTX/TXT/MD 解析；分段策略为固定长度分片（chunk_size/overlap），DOCX 全文合并后分片，不保留段落/表格边界
 - 分段预览：仅解析返回列表，不落库；向量化接口（最后一步）再落库并建索引
-- 向量库能力委托 service.ai.vector_db
+- 向量库能力委托 service.ai.vector_db_qdrant
 """
 
 import os
@@ -24,7 +24,7 @@ from utils.http_body import (
 )
 
 from service.ai.files import convert_doc_to_docx_with_libreoffice, convert_ppt_to_pptx_with_libreoffice
-from service.ai.vector_db import (
+from service.ai.vector_db_qdrant import (
     DB_NAME_PATTERN,
     _append_documents_to_mysql,
     _create_empty_vector_db_on_disk,
@@ -1425,7 +1425,7 @@ async def get_knowledge_base_detail_api(request: Request):
 
 
 if __name__ == "__main__":
-    from service.ai import vector_db
-    vector_db._ensure_storage()
-    print("向量库存储目录:", vector_db._storage_root())
-    print("已有向量库:", vector_db.list_vector_dbs())
+    from service.ai import vector_db_qdrant
+    vector_db_qdrant._ensure_storage()
+    print("向量库存储目录:", vector_db_qdrant._storage_root())
+    print("已有向量库:", vector_db_qdrant.list_vector_dbs())

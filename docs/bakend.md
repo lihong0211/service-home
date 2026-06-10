@@ -1,4 +1,6 @@
-# 后端面试题精要
+# 后端面试题精要（Python / Go）
+
+> **姊妹文档：** 数据库（MySQL 详解）、PostgreSQL、MongoDB、Redis、消息队列（RabbitMQ / RocketMQ / Kafka）、网络与操作系统、分布式与系统设计等见 `[database-mq-interview.md](./database-mq-interview.md)`。
 
 ---
 
@@ -38,12 +40,81 @@ c[0].append(99)  # a[0] 不变
 
 ### 4. 列表 vs 元组 vs 集合 vs 字典
 
-| | list | tuple | set | dict |
-|---|---|---|---|---|
-| 有序 | 是 | 是 | 否（3.7+ 插入有序）| 是（3.7+ 插入有序）|
-| 可变 | 是 | **否** | 是 | 是 |
-| 允许重复 | 是 | 是 | **否** | key 不重复 |
-| 哈希 | 否 | **是**（可作 key）| 否 | 否 |
+
+|      | list | tuple         | set          | dict         |
+| ---- | ---- | ------------- | ------------ | ------------ |
+| 有序   | 是    | 是             | 否（3.7+ 插入有序） | 是（3.7+ 插入有序） |
+| 可变   | 是    | **否**         | 是            | 是            |
+| 允许重复 | 是    | 是             | **否**        | key 不重复      |
+| 哈希   | 否    | **是**（可作 key） | 否            | 否            |
+
+
+---
+
+### 4.1 Python 数据类型
+
+#### 核心分类
+
+- **数值类型**：`int`、`float`、`complex`、`bool`
+- **序列类型**：`str`、`list`、`tuple`、`range`
+- **映射类型**：`dict`
+- **集合类型**：`set`、`frozenset`
+- **二进制类型**：`bytes`、`bytearray`、`memoryview`
+- **空值类型**：`NoneType`（即 `None`）
+
+#### 可变 vs 不可变（非常常考）
+
+- **不可变**：`int`、`float`、`bool`、`str`、`tuple`、`frozenset`、`bytes`
+- **可变**：`list`、`dict`、`set`、`bytearray`
+
+```python
+s = "abc"
+print(id(s))
+s += "d"         # 生成新对象
+print(id(s))     # id 改变（不可变对象）
+
+arr = [1, 2]
+print(id(arr))
+arr.append(3)    # 原地修改
+print(id(arr))   # id 不变（可变对象）
+```
+
+#### 为什么有些类型能做 dict key？
+
+- 作为 key 必须**可哈希（hashable）**
+- 一般要求对象不可变，且 `__hash__` 稳定
+- `tuple` 只有在其元素都可哈希时，才能做 key
+
+```python
+d = {}
+d["name"] = "Tom"        # OK
+d[(1, 2, 3)] = "tuple"   # OK
+# d[[1, 2, 3]] = "list"  # TypeError: unhashable type: 'list'
+```
+
+#### 常见类型转换
+
+```python
+int("12")            # 12
+float("3.14")        # 3.14
+str(100)             # "100"
+list("abc")          # ['a', 'b', 'c']
+tuple([1, 2])        # (1, 2)
+set([1, 1, 2, 3])    # {1, 2, 3}
+dict([("a", 1)])     # {'a': 1}
+```
+
+#### 面试常见坑
+
+1. `bool` 是 `int` 的子类：`isinstance(True, int) == True`
+2. `is` 比较对象身份，`==` 比较值
+3. `list * n` 复制嵌套列表会共享内层引用
+
+```python
+x = [[]] * 3
+x[0].append(1)
+print(x)   # [[1], [1], [1]]（都变了）
+```
 
 ---
 
@@ -94,6 +165,33 @@ next(gen)  # 1
 ### 7. 迭代器协议
 
 实现 `__iter__` 和 `__next__` 方法的对象。`for` 循环底层调用这两个方法，`StopIteration` 时停止。
+
+```python
+class CountDown:
+    def __init__(self, start):
+        self.n = start
+
+    def __iter__(self):
+        return self  # 迭代器对象通常返回自身
+
+    def __next__(self):
+        if self.n <= 0:
+            raise StopIteration
+        cur = self.n
+        self.n -= 1
+        return cur
+
+
+for x in CountDown(3):
+    print(x)   # 3 2 1
+```
+
+```python
+it = iter(CountDown(2))  # 等价于调用 __iter__
+print(next(it))          # 2（调用 __next__）
+print(next(it))          # 1
+# print(next(it))        # StopIteration
+```
 
 ---
 
@@ -171,6 +269,42 @@ class MyClass:
 - `__init__`：初始化实例（设置属性），无返回值
 - 单例模式通过重写 `__new__` 实现
 
+```python
+class Person:
+    def __new__(cls, name):
+        print("__new__ 调用：创建实例")
+        instance = super().__new__(cls)
+        return instance
+
+    def __init__(self, name):
+        print("__init__ 调用：初始化属性")
+        self.name = name
+
+
+p = Person("Tom")
+print(p.name)
+# 输出顺序：先 __new__，后 __init__
+```
+
+```python
+class Singleton:
+    _instance = None
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)  # 只创建一次
+        return cls._instance
+
+    def __init__(self, value):
+        self.value = value
+
+
+a = Singleton(1)
+b = Singleton(2)
+print(a is b)   # True
+print(a.value)  # 2（同一对象被再次初始化）
+```
+
 ---
 
 ### 13. 多继承 & MRO（方法解析顺序）
@@ -244,6 +378,138 @@ all([True, True])       # True（全为真）
 - **引用计数**：主要机制，引用数为 0 立即回收
 - **循环垃圾收集器**：处理循环引用（标记-清除算法）
 - **内存池**：小对象（≤256 字节）使用 pymalloc 内存池，避免频繁 malloc
+
+---
+
+### 18. Django vs Flask vs FastAPI
+
+
+|     | Django        | Flask           | FastAPI                  |
+| --- | ------------- | --------------- | ------------------------ |
+| 类型  | 全栈重量级         | 微框架             | 现代异步框架                   |
+| ORM | 内置 Django ORM | 无（用 SQLAlchemy） | 无（用 SQLAlchemy/Tortoise） |
+| 异步  | 部分支持          | 有限支持            | ✅ 原生 async/await         |
+| 性能  | 一般            | 中等              | 极高（接近 Go）                |
+| 文档  | 手动            | 手动              | ✅ 自动（OpenAPI）            |
+| 适用  | 快速搭建完整应用      | 灵活小项目           | 高性能 API、微服务              |
+
+
+---
+
+### 19. ORM 核心概念
+
+SQLAlchemy 是 Python 最常用的 ORM，把数据库表映射成类、把行映射成对象，让我们用面向对象方式操作数据库。  
+核心是 `Session` 作为工作单元统一管理增删改查和事务提交，常用查询是链式写法：`query().filter().order_by().limit().all()`。
+
+```python
+# SQLAlchemy 示例
+class User(Base):
+    __tablename__ = 'users'
+    id = Column(Integer, primary_key=True)
+    name = Column(String(50))
+
+# 查询
+session.query(User).filter(User.name == 'Alice').first()
+
+# N+1 问题：查询列表后逐条查关联数据
+# 解决：使用 joinedload / selectinload 预加载
+```
+
+---
+
+### 20. RESTful API 设计规范
+
+```
+GET    /users          # 获取列表
+GET    /users/{id}     # 获取单个
+POST   /users          # 创建
+PUT    /users/{id}     # 全量更新
+PATCH  /users/{id}     # 部分更新
+DELETE /users/{id}     # 删除
+
+状态码：200、201、204、400、401、403、404、500
+版本控制：/api/v1/users
+```
+
+---
+
+### 21. JWT 认证
+
+**JSON Web Token**：把「身份与权限声明」编码成一串可验证的字符串，常用于 **API 无状态认证**（也可做信息交换，但认证场景最常见）。
+
+#### 结构：`Header.Payload.Signature`（两段 Base64URL + 签名）
+
+三部分用 **`.`** 连接；**Header** 与 **Payload** 是 **Base64URL** 编码的 JSON（**不是加密**，任何人都能解码看明文，**敏感信息不要放 Payload**）。
+
+```
+eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c
+```
+
+| 部分 | 内容 | 作用 |
+|---|---|---|
+| **Header** | 如 `{"alg":"HS256","typ":"JWT"}` | 声明签名算法与类型 |
+| **Payload** | 一组 **Claims**（声明）| 承载用户 id、角色、过期时间等 |
+| **Signature** | 对 `Base64Url(Header) + "." + Base64Url(Payload)` 做签名 | 防篡改；校验通过才信任 Payload |
+
+**签名算法（常见）：**
+
+- **HS256** 等对称算法：服务端用**同一密钥**签发与校验，实现简单，密钥泄露则全线危险。
+- **RS256** 等非对称算法：**私钥签发、公钥校验**，适合多服务/网关只持公钥验签，私钥集中在认证服务。
+
+#### 标准 Claims（RFC 7519，面试常问）
+
+| Claim | 含义 |
+|---|---|
+| `iss` | 签发者 |
+| `sub` | 主体（常用用户 id）|
+| `aud` | 受众（期望消费的系统）|
+| `exp` | 过期时间（Unix 时间戳）|
+| `nbf` | 生效时间 |
+| `iat` | 签发时间 |
+| `jti` | 令牌唯一 id（可做一次性或黑名单键）|
+
+自定义业务字段如 `role`、`permissions` 也可放 Payload，但**体积越大，每次请求头越大**。
+
+#### 典型认证流程
+
+1. 用户登录（账号密码 / OAuth 等），服务端校验通过后**签发 JWT**（设较短 `exp`，如 15 分钟～2 小时）。
+2. 客户端保存（**HttpOnly Cookie** 可降低 XSS 盗 token 风险；若放 **localStorage** 则须严防 XSS）。
+3. 后续请求带 `Authorization: Bearer <token>`（或 Cookie），**网关 / 业务服务**用密钥或公钥**验签**并解析 `exp`、`sub` 等。
+4. **无需**为每次请求查库会话表（**无状态**）；需要权限时再查库或查缓存亦可。
+
+#### 优点
+
+- **无状态**：水平扩展服务时不依赖集中 Session 存储。
+- **跨服务**：各服务共密钥或共公钥即可验签（注意 `aud`、时钟同步）。
+- **适合移动端 / SPA**：天然适合 Bearer 传递。
+
+#### 缺点与风险
+
+- **默认无法「服务端主动作废」**：在 `exp` 之前 token 一直有效（除非维护**黑名单**、或改密钥全员失效）。
+- **泄露即冒用**：HTTPS 传输；避免把 JWT 打到日志、URL 查询串。
+- **Payload 明文**：勿放密码、支付密钥等。
+
+#### 工程上常见补强
+
+- **Access Token（短效）+ Refresh Token（长效、可轮转、可存库或 Redis）**：降低被盗窗口，刷新时可吊销 refresh。
+- **黑名单 / 版本号**：登出或封号时把 `jti` 或 `(user_id, token_version)` 记入 Redis，校验时拒绝。
+- **权限变更**：Payload 里的角色若长期不变，改权限后需等新 token 或配合服务端二次校验。
+
+#### 与 Session 对比（一句话）
+
+| | Session（Cookie + 服务端存储）| JWT |
+|---|---|---|
+| 状态 | 有状态，依赖存储 | 验签即可，默认无状态 |
+| 吊销 | 删 session 即失效 | 需额外机制（短 exp、黑名单、refresh）|
+| 体积 | Cookie 里常只存 session id | 整包 claims 在客户端，可能较大 |
+
+---
+
+**速记公式（HS256）：**
+
+```
+Signature = HMACSHA256( base64url(Header) + "." + base64url(Payload), secret )
+```
 
 ---
 
@@ -383,555 +649,4 @@ if err != nil {
 
 ---
 
-## 三、数据库（MySQL）
-
-### 1. 事务 ACID
-
-| 特性 | 说明 |
-|---|---|
-| **A** tomicity 原子性 | 事务要么全成功，要么全回滚 |
-| **C** onsistency 一致性 | 事务前后数据符合业务规则 |
-| **I** solation 隔离性 | 并发事务互不干扰 |
-| **D** urability 持久性 | 提交后数据永久保存（redo log）|
-
----
-
-### 2. 事务隔离级别
-
-| 级别 | 脏读 | 不可重复读 | 幻读 |
-|---|---|---|---|
-| Read Uncommitted | ✅ 有 | ✅ 有 | ✅ 有 |
-| Read Committed | ❌ 无 | ✅ 有 | ✅ 有 |
-| **Repeatable Read**（MySQL 默认）| ❌ 无 | ❌ 无 | ⚠️ 部分（MVCC 解决快照读）|
-| Serializable | ❌ 无 | ❌ 无 | ❌ 无 |
-
-- **脏读：** 读到其他事务未提交的数据
-- **不可重复读：** 同一事务内两次读同一行，数据不同（被其他事务修改）
-- **幻读：** 同一事务内两次查询，行数不同（被其他事务插入/删除）
-
----
-
-### 3. 索引类型与原理
-
-**结构：** InnoDB 使用 **B+ 树**索引
-
-| 类型 | 说明 |
-|---|---|
-| 主键索引（聚簇）| 叶子节点存储完整行数据 |
-| 普通索引（非聚簇）| 叶子节点存储主键值，需**回表**查询 |
-| 唯一索引 | 保证字段值唯一 |
-| 复合索引 | 多列联合索引，遵循**最左前缀原则** |
-| 全文索引 | 文本搜索（倒排索引）|
-
-**B+ 树 vs B 树：**
-- B+ 树所有数据在叶子节点，叶子节点有链表连接 → 范围查询高效
-- 非叶子节点只存 key，单页能存更多，树更矮（减少 I/O）
-
----
-
-### 4. 最左前缀原则
-
-复合索引 `(a, b, c)`：
-
-```sql
-WHERE a = 1            -- ✅ 使用索引
-WHERE a = 1 AND b = 2  -- ✅ 使用索引
-WHERE b = 2            -- ❌ 不使用（跳过 a）
-WHERE a = 1 AND c = 3  -- ✅ 部分使用（a 索引，c 无法用）
-WHERE a > 1 AND b = 2  -- ✅ a 使用，b 范围查询后失效
-```
-
----
-
-### 5. EXPLAIN 字段解读
-
-```sql
-EXPLAIN SELECT * FROM orders WHERE user_id = 1;
-```
-
-| 字段 | 关注点 |
-|---|---|
-| `type` | 性能从好到差：system > const > eq_ref > ref > range > **index > ALL** |
-| `key` | 实际使用的索引（NULL 表示未用索引）|
-| `rows` | 预估扫描行数（越小越好）|
-| `Extra` | `Using index`（覆盖索引好）、`Using filesort`（需优化）|
-
----
-
-### 6. 索引失效场景
-
-```sql
--- 1. 对索引列使用函数
-WHERE YEAR(create_time) = 2024       -- ❌
-
--- 2. 隐式类型转换
-WHERE phone = 13800138000            -- phone 是 varchar，❌
-
--- 3. 前导模糊查询
-WHERE name LIKE '%张'                 -- ❌（'张%' 可以）
-
--- 4. OR 连接非索引列
-WHERE id = 1 OR name = 'John'        -- name 无索引则全表扫描
-
--- 5. NOT IN / NOT EXISTS（部分情况）
-
--- 6. 范围查询后的字段（复合索引）
-```
-
----
-
-### 7. 锁机制
-
-| 锁类型 | 说明 |
-|---|---|
-| 共享锁（S）| 读锁，多个事务可同时持有 |
-| 排他锁（X）| 写锁，独占，其他事务不能读写 |
-| 意向锁 | 表级，标记某行已被行锁，避免表锁与行锁冲突检查 |
-| 行锁 | 锁定特定行（InnoDB 支持）|
-| 间隙锁（Gap Lock）| 锁定索引间隙，防止幻读插入 |
-| 临键锁（Next-Key Lock）| 行锁 + 间隙锁，RR 级别默认 |
-
-**死锁：** 两个事务互相等待对方持有的锁。MySQL 自动检测并回滚代价小的事务。
-
----
-
-### 8. MVCC（多版本并发控制）
-
-InnoDB 在 Repeatable Read 下通过 MVCC 实现无锁读：
-- 每行数据有隐藏字段：`trx_id`（最近修改事务 ID）、`roll_pointer`（undo log 指针）
-- 读操作生成**一致性视图（Read View）**，根据事务 ID 判断版本可见性
-- **快照读**（普通 SELECT）：不加锁，读历史版本
-- **当前读**（SELECT FOR UPDATE / INSERT / UPDATE / DELETE）：加锁，读最新版本
-
----
-
-### 9. redo log vs undo log vs binlog
-
-| | redo log | undo log | binlog |
-|---|---|---|---|
-| 所属层 | InnoDB 引擎层 | InnoDB 引擎层 | MySQL Server 层 |
-| 作用 | 崩溃恢复（持久性）| 事务回滚 + MVCC | 主从同步、数据恢复 |
-| 格式 | 物理日志（页变更）| 逻辑日志（反操作）| 逻辑日志（statement/row/mixed）|
-| 写入时机 | 事务执行中（WAL）| 事务开始时 | 事务提交时 |
-
-**WAL（Write-Ahead Logging）：** 先写日志再写磁盘，减少随机 I/O。
-
----
-
-### 10. 分库分表
-
-**水平分表：** 同一结构，数据按规则拆分到多张表（如按 user_id 取模）  
-**垂直分表：** 按字段拆分，常用字段和大字段分离（冷热分离）  
-**分库：** 将不同业务的表放到不同数据库（垂直分库）或数据水平拆分到多个库
-
-**分片键选择原则：** 数据均匀分布、查询尽量落在单库、避免跨库事务
-
----
-
-### 11. 慢查询优化思路
-
-1. 开启慢查询日志，找到慢 SQL
-2. `EXPLAIN` 分析执行计划
-3. 检查是否命中索引（type、key 字段）
-4. 优化：加索引、改写 SQL、覆盖索引减少回表
-5. 大表考虑分页优化（`WHERE id > last_id LIMIT 10` 代替 `OFFSET`）
-6. 必要时读写分离、缓存热点数据
-
----
-
-### 12. InnoDB vs MyISAM
-
-| | InnoDB | MyISAM |
-|---|---|---|
-| 事务 | ✅ 支持 | ❌ |
-| 外键 | ✅ 支持 | ❌ |
-| 行锁 | ✅ | ❌（表锁）|
-| 崩溃恢复 | ✅（redo log）| ❌ |
-| 全文索引 | ✅（5.6+）| ✅ |
-| 适用场景 | OLTP（事务读写）| 读多写少（已基本淘汰）|
-
----
-
----
-
-## 四、Redis
-
-### 1. Redis 数据类型
-
-| 类型 | 底层实现 | 场景 |
-|---|---|---|
-| String | SDS（动态字符串）| 缓存、计数器、分布式锁 |
-| Hash | 压缩列表 / 哈希表 | 对象存储（用户信息）|
-| List | 压缩列表 / 双向链表 | 消息队列、最新列表 |
-| Set | 哈希表 / 整数集合 | 去重、标签、共同好友 |
-| ZSet（Sorted Set）| 压缩列表 / 跳表 | 排行榜、延迟队列 |
-| Stream | - | 消息队列（Pub/Sub 升级版）|
-| BitMap | - | 签到、在线状态 |
-| HyperLogLog | - | 大数据基数统计（有误差）|
-
----
-
-### 2. Redis 为什么快？
-
-1. **纯内存操作**：数据在内存，读写纳秒级
-2. **单线程模型**（命令处理）：无锁竞争，无上下文切换
-3. **I/O 多路复用**：`epoll` 事件驱动，处理大量并发连接
-4. **高效数据结构**：SDS、跳表、压缩列表等针对场景优化
-
-> Redis 6.0+ 引入多线程处理网络 I/O，命令执行仍单线程。
-
----
-
-### 3. 持久化：RDB vs AOF
-
-| | RDB | AOF |
-|---|---|---|
-| 方式 | 全量快照（fork 子进程）| 追加写命令日志 |
-| 数据安全 | 可能丢失最后一次快照后的数据 | 最多丢失 1 秒数据（fsync 策略）|
-| 文件大小 | 小（二进制压缩）| 大（命令文本，可 rewrite 压缩）|
-| 恢复速度 | 快 | 慢（回放命令）|
-| 生产建议 | 同时开启 | 同时开启，AOF 优先恢复 |
-
----
-
-### 4. 缓存三问：穿透、击穿、雪崩
-
-**缓存穿透**（查询不存在的数据）
-- 原因：恶意请求不存在的 key，每次都打到 DB
-- 解决：缓存空值（短 TTL）、**布隆过滤器**（前置过滤）
-
-**缓存击穿**（热点 key 过期）
-- 原因：热点 key 突然过期，大量请求打到 DB
-- 解决：**互斥锁**（只允许一个请求重建缓存）、逻辑过期（不设 TTL，异步更新）
-
-**缓存雪崩**（大量 key 同时过期 / Redis 宕机）
-- 原因：批量 key 相同时间过期，或 Redis 实例崩溃
-- 解决：TTL **随机化**、Redis **集群/哨兵**高可用、熔断降级
-
----
-
-### 5. 分布式锁
-
-```bash
-# 原子操作：加锁
-SET lock_key unique_value NX PX 30000
-# NX: 不存在才设置（互斥）
-# PX 30000: 30秒过期（防死锁）
-
-# 释放锁（Lua 脚本保证原子性）
-if redis.call("get", KEYS[1]) == ARGV[1] then
-    return redis.call("del", KEYS[1])
-end
-```
-
-**Redlock 算法：** 多个独立 Redis 实例，向超半数节点加锁才算成功，防单点故障。
-
----
-
-### 6. 淘汰策略（内存满时）
-
-| 策略 | 说明 |
-|---|---|
-| `noeviction` | 不淘汰，写操作报错（默认）|
-| `allkeys-lru` | 所有 key 中 LRU 淘汰（常用）|
-| `volatile-lru` | 有 TTL 的 key 中 LRU 淘汰 |
-| `allkeys-lfu` | 所有 key 中 LFU 淘汰（Redis 4.0+）|
-| `volatile-ttl` | TTL 最短的先淘汰 |
-| `allkeys-random` | 随机淘汰 |
-
----
-
-### 7. 主从复制
-
-1. **全量复制**：从节点首次连接，主节点 fork 生成 RDB 快照发送
-2. **增量复制**：断线重连后，主节点通过 `repl_backlog`（环形缓冲区）补发缺失命令
-3. **复制延迟**：异步复制，存在数据延迟（可用 `WAIT` 命令半同步）
-
----
-
-### 8. 哨兵（Sentinel）vs 集群（Cluster）
-
-| | Sentinel | Cluster |
-|---|---|---|
-| 目的 | 高可用（自动故障转移）| 高可用 + 水平扩展 |
-| 数据分片 | 否（全量在主节点）| 是（16384 槽位哈希分片）|
-| 节点数 | 1 主多从 + 3+ 哨兵 | 3+ 主节点，每主带从节点 |
-| 客户端 | 连哨兵获取主节点地址 | 直连集群，支持重定向 |
-| 适合场景 | 数据量不大、读写分离 | 大数据量、高并发 |
-
----
-
-### 9. 跳表（SkipList）
-
-ZSet 的底层结构，有序链表 + 多层索引，查询/插入/删除 O(log N)。  
-优于红黑树：实现简单，范围查询友好；优于 B+ 树：不需要节点合并分裂。
-
----
-
-### 10. Pipeline & Lua 脚本
-
-**Pipeline：** 批量发送命令，减少 RTT（网络往返）次数，提升吞吐量。非原子。
-
-**Lua 脚本：** Redis 保证脚本原子执行（执行期间不处理其他命令），适合复合操作。
-
-```bash
-EVAL "return redis.call('set', KEYS[1], ARGV[1])" 1 mykey myvalue
-```
-
----
-
----
-
-## 五、网络 & 操作系统
-
-### 1. TCP 三次握手 / 四次挥手
-
-**三次握手（建立连接）：**
-```
-客户端 → SYN(seq=x)            → 服务端  [SYN_SENT]
-客户端 ← SYN+ACK(seq=y,ack=x+1)← 服务端  [SYN_RCVD]
-客户端 → ACK(ack=y+1)          → 服务端  [ESTABLISHED]
-```
-
-**四次挥手（关闭连接）：**
-```
-客户端 → FIN → 服务端   [FIN_WAIT_1]
-客户端 ← ACK ← 服务端   [CLOSE_WAIT] 服务端还可发数据
-客户端 ← FIN ← 服务端   [LAST_ACK]
-客户端 → ACK → 服务端   [TIME_WAIT → CLOSED]（等 2MSL）
-```
-
-> 为什么三次握手？确认双方收发能力正常；两次不够，服务端无法确认客户端能收。  
-> 为什么四次挥手？TCP 半关闭，服务端收到 FIN 后还可能有数据要发。
-
----
-
-### 2. TCP vs UDP
-
-| | TCP | UDP |
-|---|---|---|
-| 连接 | 面向连接 | 无连接 |
-| 可靠性 | 可靠（重传、确认）| 不可靠 |
-| 顺序 | 保证顺序 | 不保证 |
-| 速度 | 慢（握手、拥塞控制）| 快 |
-| 场景 | HTTP、FTP、SSH | 视频流、DNS、游戏 |
-
----
-
-### 3. HTTP/1.1 vs HTTP/2 vs HTTP/3
-
-| | HTTP/1.1 | HTTP/2 | HTTP/3 |
-|---|---|---|---|
-| 传输 | 文本 | 二进制帧 | QUIC（UDP）|
-| 多路复用 | 有队头阻塞 | ✅（帧级别）| ✅（流级别，彻底解决）|
-| 头部压缩 | ❌ | ✅（HPACK）| ✅（QPACK）|
-| 服务器推送 | ❌ | ✅ | ✅ |
-
----
-
-### 4. 进程 vs 线程 vs 协程
-
-| | 进程 | 线程 | 协程 |
-|---|---|---|---|
-| 内存空间 | 独立 | 共享进程内存 | 共享线程内存 |
-| 切换开销 | 大 | 中 | 极小 |
-| 并发 | 是 | 是 | 单线程内并发 |
-| 通信 | IPC（管道、信号等）| 共享内存 | 函数调用 |
-| 崩溃影响 | 不影响其他进程 | 影响同进程所有线程 | — |
-
----
-
-### 5. 同步 / 异步 / 阻塞 / 非阻塞
-
-- **阻塞 vs 非阻塞：** 等待结果时是否占用 CPU（调用方的状态）
-- **同步 vs 异步：** 调用方是否等待结果返回再继续（消息通知机制）
-
-| 组合 | 说明 | 示例 |
-|---|---|---|
-| 同步阻塞 | 最常见，等待完成再继续 | 普通 read() |
-| 同步非阻塞 | 轮询检查，不等待 | 非阻塞 socket |
-| 异步非阻塞 | 注册回调，完成后通知 | epoll + callback |
-
----
-
-### 6. 负载均衡算法
-
-| 算法 | 说明 | 适用 |
-|---|---|---|
-| 轮询（Round Robin）| 依次分配 | 服务器性能相同 |
-| 加权轮询 | 按权重分配 | 性能不同的服务器 |
-| IP Hash | 同一 IP 到同一服务器 | 需要会话保持 |
-| 最少连接 | 分配给连接数最少的 | 长连接场景 |
-| 随机 | 随机选择 | 简单场景 |
-
----
-
----
-
-## 六、系统设计 & 架构
-
-### 1. CAP 定理
-
-分布式系统只能同时满足以下两项：
-- **C**onsistency（一致性）：所有节点同时看到相同数据
-- **A**vailability（可用性）：每个请求都得到响应
-- **P**artition Tolerance（分区容错性）：网络分区时系统仍运行
-
-> 网络分区不可避免，实际上是 **CP vs AP** 的选择。  
-> MySQL（主从）→ CP；Cassandra → AP；ZooKeeper → CP。
-
----
-
-### 2. BASE 理论
-
-对 CAP 中 AP 系统的妥协方案：
-- **B**asically Available（基本可用）：允许部分不可用
-- **S**oft State（软状态）：数据可以有中间状态
-- **E**ventual Consistency（最终一致性）：数据最终一致
-
----
-
-### 3. 消息队列（MQ）的作用
-
-- **解耦：** 生产者/消费者独立
-- **削峰：** 流量高峰时缓冲请求
-- **异步：** 非核心链路异步处理
-
-**常见 MQ 对比：**
-
-| | Kafka | RabbitMQ | RocketMQ |
-|---|---|---|---|
-| 吞吐量 | 极高（百万级/s）| 中（万级）| 高（十万级）|
-| 延迟 | 较高（ms 级）| 低（μs 级）| 低 |
-| 消费模型 | Pull（消费者拉）| Push | Pull/Push |
-| 场景 | 日志、流处理 | 业务消息 | 交易、订单 |
-
----
-
-### 4. 幂等性设计
-
-相同请求执行多次，结果与执行一次相同。
-
-**实现方案：**
-- **唯一请求 ID：** 客户端生成，服务端去重（Redis SET NX）
-- **数据库唯一约束：** 防重复插入
-- **状态机：** 只允许特定状态转换
-- **乐观锁：** 版本号控制
-
----
-
-### 5. 分布式事务
-
-| 方案 | 说明 | 缺点 |
-|---|---|---|
-| 2PC（两阶段提交）| 协调者广播准备→提交 | 同步阻塞，单点故障 |
-| TCC | Try-Confirm-Cancel，业务层补偿 | 代码侵入性大 |
-| Saga | 长事务拆分，失败逐步补偿 | 复杂度高 |
-| 本地消息表 | 事务内写消息表，异步消费 | 实现简单，最终一致 |
-
----
-
-### 6. 限流算法
-
-| 算法 | 说明 | 特点 |
-|---|---|---|
-| 固定窗口 | 每个时间窗口计数，超过限制 | 临界突刺问题 |
-| 滑动窗口 | 精确记录每个请求时间 | 较精确，内存大 |
-| 漏桶 | 恒定速率处理，多余丢弃 | 流量平滑，不允许突发 |
-| 令牌桶 | 恒定速率生成令牌，有桶容量 | 允许一定突发（常用）|
-
----
-
-### 7. 接口幂等 & 防重复提交
-
-```
-前端：提交后禁用按钮
-后端：
-  1. 客户端生成 token，提交前获取
-  2. 服务端 Redis SET NX token 处理中
-  3. 处理完成删除 token
-  → 重复请求直接返回"处理中"或"已处理"
-```
-
----
-
-### 8. 秒杀系统设计
-
-```
-1. 前端限流：按钮置灰、随机放行
-2. 网关限流：令牌桶/漏桶
-3. Redis 预扣库存：DECR + 判断 >= 0（原子操作）
-4. 异步下单：发 MQ，订单服务消费
-5. 数据库：数据库扣减 + 乐观锁（version 字段）
-6. 超卖保护：库存不足时快速失败
-```
-
----
-
----
-
-## 七、Python Web 框架
-
-### 1. Django vs Flask vs FastAPI
-
-| | Django | Flask | FastAPI |
-|---|---|---|---|
-| 类型 | 全栈重量级 | 微框架 | 现代异步框架 |
-| ORM | 内置 Django ORM | 无（用 SQLAlchemy）| 无（用 SQLAlchemy/Tortoise）|
-| 异步 | 部分支持 | 有限支持 | ✅ 原生 async/await |
-| 性能 | 一般 | 中等 | 极高（接近 Go）|
-| 文档 | 手动 | 手动 | ✅ 自动（OpenAPI）|
-| 适用 | 快速搭建完整应用 | 灵活小项目 | 高性能 API、微服务 |
-
----
-
-### 2. ORM 核心概念
-
-```python
-# SQLAlchemy 示例
-class User(Base):
-    __tablename__ = 'users'
-    id = Column(Integer, primary_key=True)
-    name = Column(String(50))
-
-# 查询
-session.query(User).filter(User.name == 'Alice').first()
-
-# N+1 问题：查询列表后逐条查关联数据
-# 解决：使用 joinedload / selectinload 预加载
-```
-
----
-
-### 3. RESTful API 设计规范
-
-```
-GET    /users          # 获取列表
-GET    /users/{id}     # 获取单个
-POST   /users          # 创建
-PUT    /users/{id}     # 全量更新
-PATCH  /users/{id}     # 部分更新
-DELETE /users/{id}     # 删除
-
-状态码：200、201、204、400、401、403、404、500
-版本控制：/api/v1/users
-```
-
----
-
-### 4. JWT 认证
-
-```
-Header.Payload.Signature
-
-Header: {"alg": "HS256", "typ": "JWT"}
-Payload: {"sub": "user_id", "exp": 时间戳}
-Signature: HMACSHA256(base64(header)+"."+base64(payload), secret)
-```
-
-- 无状态，服务端不存 session
-- 缺点：无法主动失效（解决：Redis 黑名单 / refresh token 机制）
-
----
-
-*文档共计 70+ 题，持续更新。*
+*Python / Go 部分持续更新；基础设施与中间件见 `database-mq-interview.md`。*

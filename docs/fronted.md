@@ -6,12 +6,14 @@
 
 ### 1. var / let / const 的区别
 
-| | var | let | const |
-|---|---|---|---|
-| 作用域 | 函数 | 块级 | 块级 |
-| 变量提升 | 是（undefined）| 是（TDZ，不可用）| 是（TDZ，不可用）|
-| 重复声明 | 允许 | 不允许 | 不允许 |
-| 可重赋值 | 是 | 是 | 否 |
+
+|      | var          | let        | const      |
+| ---- | ------------ | ---------- | ---------- |
+| 作用域  | 函数           | 块级         | 块级         |
+| 变量提升 | 是（undefined） | 是（TDZ，不可用） | 是（TDZ，不可用） |
+| 重复声明 | 允许           | 不允许        | 不允许        |
+| 可重赋值 | 是            | 是          | 否          |
+
 
 > TDZ（暂时性死区）：声明前访问会抛 `ReferenceError`。
 
@@ -56,10 +58,12 @@ Dog.prototype.__proto__ === Object.prototype  // true
 
 **执行顺序：** 同步代码 → 微任务队列 → 宏任务队列（循环）
 
-| 类型 | 示例 |
-|---|---|
-| 微任务 | `Promise.then`、`queueMicrotask`、`MutationObserver` |
+
+| 类型  | 示例                                                       |
+| --- | -------------------------------------------------------- |
+| 微任务 | `Promise.then`、`queueMicrotask`、`MutationObserver`       |
 | 宏任务 | `setTimeout`、`setInterval`、`I/O`、`requestAnimationFrame` |
+
 
 > 每次宏任务执行完后，立即清空所有微任务，再执行下一个宏任务。
 
@@ -82,6 +86,7 @@ async function load() {
 
 **Promise 状态：** `pending` → `fulfilled` / `rejected`（不可逆）  
 **常用方法：**
+
 - `Promise.all`：全部成功才成功，一个失败即失败
 - `Promise.allSettled`：全部结束，不论成功失败
 - `Promise.race`：第一个结束的结果
@@ -91,13 +96,15 @@ async function load() {
 
 ### 6. this 指向
 
-| 调用方式 | this |
-|---|---|
-| 普通函数调用 | `window`（严格模式 `undefined`）|
-| 方法调用 | 调用该方法的对象 |
-| `new` 调用 | 新创建的实例 |
-| `call/apply/bind` | 指定的第一个参数 |
-| 箭头函数 | 定义时的外层 `this`（不可更改）|
+
+| 调用方式              | this                       |
+| ----------------- | -------------------------- |
+| 普通函数调用            | `window`（严格模式 `undefined`） |
+| 方法调用              | 调用该方法的对象                   |
+| `new` 调用          | 新创建的实例                     |
+| `call/apply/bind` | 指定的第一个参数                   |
+| 箭头函数              | 定义时的外层 `this`（不可更改）        |
+
 
 ---
 
@@ -118,10 +125,12 @@ const deep = structuredClone(obj)  // 现代浏览器原生支持
 
 ### 8. 防抖（debounce）vs 节流（throttle）
 
-| | 防抖 | 节流 |
-|---|---|---|
-| 触发时机 | 停止触发 N 毫秒后执行一次 | 每隔 N 毫秒执行一次 |
-| 场景 | 搜索输入框、窗口 resize | 滚动事件、按钮连点 |
+
+|      | 防抖              | 节流          |
+| ---- | --------------- | ----------- |
+| 触发时机 | 停止触发 N 毫秒后执行一次  | 每隔 N 毫秒执行一次 |
+| 场景   | 搜索输入框、窗口 resize | 滚动事件、按钮连点   |
+
 
 ```js
 // 防抖
@@ -147,12 +156,14 @@ function throttle(fn, interval) {
 
 ### 9. 箭头函数 vs 普通函数
 
-| | 箭头函数 | 普通函数 |
-|---|---|---|
-| `this` | 继承外层（词法） | 动态绑定 |
-| `arguments` | 无 | 有 |
-| `new` | 不可用 | 可用 |
-| `prototype` | 无 | 有 |
+
+|             | 箭头函数     | 普通函数 |
+| ----------- | -------- | ---- |
+| `this`      | 继承外层（词法） | 动态绑定 |
+| `arguments` | 无        | 有    |
+| `new`       | 不可用      | 可用   |
+| `prototype` | 无        | 有    |
+
 
 ---
 
@@ -206,6 +217,32 @@ function myNew(Constructor, ...args) {
   const result = Constructor.apply(obj, args)        // 执行构造函数
   return result instanceof Object ? result : obj     // 若构造函数返回对象则用它
 }
+
+
+// 1) 构造函数没有手动返回对象
+function Person(name, age) {
+  this.name = name
+  this.age = age
+}
+Person.prototype.sayHi = function () {
+  return `Hi, 我是${this.name}`
+}
+
+const p1 = myNew(Person, "LiHua", 20)
+console.log(p1.name)                 // LiHua
+console.log(p1.sayHi())              // Hi, 我是LiHua
+console.log(p1 instanceof Person)    // true
+
+// 2) 构造函数手动返回对象（会覆盖 this）
+function Animal(type) {
+  this.type = type
+  return { custom: "override" }
+}
+
+const a1 = myNew(Animal, "cat")
+console.log(a1)                      // { custom: 'override' }
+console.log(a1.type)                 // undefined
+console.log(a1 instanceof Animal)    // false
 ```
 
 ---
@@ -215,32 +252,49 @@ function myNew(Constructor, ...args) {
 ```js
 Function.prototype.myCall = function(ctx, ...args) {
   ctx = ctx || window
-  const sym = Symbol()
+  const fnKey = Symbol()
   ctx[sym] = this
   const res = ctx[sym](...args)
   delete ctx[sym]
   return res
 }
+function greet(greeting, punctuation) {
+  return `${greeting}，我是${this.name}${punctuation}`
+}
+const user = { name: "小李" }
+const r1 = greet.myCall(user, "你好", "！")
+console.log(r1) // 你好，我是小李！
+const r2 = greet.myCall({ name: "Tom" }, "Hi", ".")
+console.log(r2) // Hi，我是Tom.
 
 Function.prototype.myBind = function(ctx, ...args) {
   return (...rest) => this.call(ctx, ...args, ...rest)
 }
+function add(a, b, c) {
+  return a + b + c
+}
+const add10 = add.myBind(null, 10) // 预置 a=10
+console.log(add10(20, 30))         // 60
+// 这里 rest = [20, 30]
+// 最终调用 add(null, 10, 20, 30)
 ```
 
 ---
 
 ### 16. 数组常用方法
 
-| 方法 | 说明 | 是否改变原数组 |
-|---|---|---|
-| `push/pop` | 末尾增/删 | 是 |
-| `shift/unshift` | 头部删/增 | 是 |
-| `splice(i, n, ...items)` | 删除/插入 | 是 |
-| `slice(start, end)` | 截取 | 否 |
-| `map/filter/reduce` | 遍历转换 | 否 |
-| `find/findIndex` | 查找 | 否 |
-| `flat(depth)` | 展平 | 否 |
-| `sort` | 排序 | 是 |
+
+| 方法                       | 说明    | 是否改变原数组 |
+| ------------------------ | ----- | ------- |
+| `push/pop`               | 末尾增/删 | 是       |
+| `shift/unshift`          | 头部删/增 | 是       |
+| `splice(i, n, ...items)` | 删除/插入 | 是       |
+| `slice(start, end)`      | 截取    | 否       |
+| `map/filter/reduce`      | 遍历转换  | 否       |
+| `find/findIndex`         | 查找    | 否       |
+| `flat(depth)`            | 展平    | 否       |
+| `sort`                   | 排序    | 是       |
+
 
 ---
 
@@ -250,7 +304,7 @@ Function.prototype.myBind = function(ctx, ...args) {
 
 ```js
 const curry = (fn) => {
-  const arity = fn.length
+  const arity = fn.length // 形参个数
   return function curried(...args) {
     if (args.length >= arity) return fn(...args)
     return (...more) => curried(...args, ...more)
@@ -262,28 +316,33 @@ const curry = (fn) => {
 
 ### 18. 模块化：ESM vs CJS
 
-| | ESM (`import/export`) | CJS (`require/module.exports`) |
-|---|---|---|
-| 加载时机 | 编译时静态分析 | 运行时动态 |
-| `this` | `undefined` | `module` |
-| 异步 | 支持 `import()` | 不支持 |
-| Tree Shaking | 支持 | 不支持 |
+
+|              | ESM (`import/export`) | CJS (`require/module.exports`) |
+| ------------ | --------------------- | ------------------------------ |
+| 加载时机         | 编译时静态分析               | 运行时动态                          |
+| `this`       | `undefined`           | `module`                       |
+| 异步           | 支持 `import()`         | 不支持                            |
+| Tree Shaking | 支持                    | 不支持                            |
+
 
 ---
 
 ### 19. Map vs WeakMap
 
-| | Map | WeakMap |
-|---|---|---|
-| 键类型 | 任意 | 只能是对象 |
-| 是否可迭代 | 是 | 否 |
-| GC 影响 | 阻止回收 | 不阻止（弱引用）|
+
+|       | Map  | WeakMap  |
+| ----- | ---- | -------- |
+| 键类型   | 任意   | 只能是对象    |
+| 是否可迭代 | 是    | 否        |
+| GC 影响 | 阻止回收 | 不阻止（弱引用） |
+
 
 ---
 
 ### 20. 事件委托
 
 利用事件冒泡，把子元素的事件监听绑定在父元素上：
+
 - 减少监听器数量，提升性能
 - 动态新增子元素无需重新绑定
 
@@ -301,13 +360,15 @@ document.getElementById('list').addEventListener('click', (e) => {
 
 ### 1. Vue2 vs Vue3 核心差异
 
-| | Vue2 | Vue3 |
-|---|---|---|
-| 响应式 | `Object.defineProperty` | `Proxy` |
-| API 风格 | Options API | Composition API（`setup`）|
-| 性能 | — | 更快（编译优化、Tree Shaking）|
-| TypeScript | 弱支持 | 原生支持 |
-| 根节点 | 单根 | 支持多根（Fragment）|
+
+|            | Vue2                    | Vue3                     |
+| ---------- | ----------------------- | ------------------------ |
+| 响应式        | `Object.defineProperty` | `Proxy`                  |
+| API 风格     | Options API             | Composition API（`setup`） |
+| 性能         | —                       | 更快（编译优化、Tree Shaking）    |
+| TypeScript | 弱支持                     | 原生支持                     |
+| 根节点        | 单根                      | 支持多根（Fragment）           |
+
 
 ---
 
@@ -321,23 +382,27 @@ document.getElementById('list').addEventListener('click', (e) => {
 
 ### 3. v-if vs v-show
 
-| | v-if | v-show |
-|---|---|---|
-| 原理 | 销毁/重建 DOM | `display: none/block` |
-| 首次渲染 | 惰性（条件为假不渲染）| 总是渲染 |
-| 切换开销 | 高 | 低 |
-| 适用场景 | 条件很少改变 | 频繁切换显示 |
+
+|      | v-if        | v-show                |
+| ---- | ----------- | --------------------- |
+| 原理   | 销毁/重建 DOM   | `display: none/block` |
+| 首次渲染 | 惰性（条件为假不渲染） | 总是渲染                  |
+| 切换开销 | 高           | 低                     |
+| 适用场景 | 条件很少改变      | 频繁切换显示                |
+
 
 ---
 
 ### 4. computed vs watch
 
-| | computed | watch |
-|---|---|---|
-| 用途 | 派生值（有返回值）| 监听值变化，执行副作用 |
-| 缓存 | 是（依赖不变不重算）| 否 |
-| 异步 | 不支持 | 支持 |
-| 场景 | 模板中的计算属性 | 数据变化后请求接口、操作 DOM |
+
+|     | computed   | watch            |
+| --- | ---------- | ---------------- |
+| 用途  | 派生值（有返回值）  | 监听值变化，执行副作用      |
+| 缓存  | 是（依赖不变不重算） | 否                |
+| 异步  | 不支持        | 支持               |
+| 场景  | 模板中的计算属性   | 数据变化后请求接口、操作 DOM |
+
 
 ---
 
@@ -359,14 +424,16 @@ onBeforeUnmount → onUnmounted      ← 卸载
 
 ### 6. 组件通信方式
 
-| 方式 | 方向 |
-|---|---|
-| `props` / `emits` | 父 → 子 / 子 → 父 |
-| `v-model` | 父子双向 |
-| `provide` / `inject` | 跨层级祖先 → 后代 |
-| `Pinia / Vuex` | 全局状态 |
-| `EventBus` / `mitt` | 任意组件（兄弟等）|
-| `$refs` | 父访问子实例 |
+
+| 方式                   | 方向            |
+| -------------------- | ------------- |
+| `props` / `emits`    | 父 → 子 / 子 → 父 |
+| `v-model`            | 父子双向          |
+| `provide` / `inject` | 跨层级祖先 → 后代    |
+| `Pinia / Vuex`       | 全局状态          |
+| `EventBus` / `mitt`  | 任意组件（兄弟等）     |
+| `$refs`              | 父访问子实例        |
+
 
 ---
 
@@ -384,13 +451,15 @@ const state = reactive({}) // 对象/数组，直接访问属性
 
 ### 8. Pinia vs Vuex
 
-| | Pinia | Vuex |
-|---|---|---|
-| API | Composition 风格，简洁 | Options 风格，有 mutation |
-| TypeScript | 原生支持 | 需额外配置 |
-| Devtools | 支持 | 支持 |
-| 模块化 | 天然扁平（每个 store 独立）| 需 `modules` |
-| Vue3 推荐 | ✅ 官方推荐 | 维护模式 |
+
+|            | Pinia             | Vuex                  |
+| ---------- | ----------------- | --------------------- |
+| API        | Composition 风格，简洁 | Options 风格，有 mutation |
+| TypeScript | 原生支持              | 需额外配置                 |
+| Devtools   | 支持                | 支持                    |
+| 模块化        | 天然扁平（每个 store 独立） | 需 `modules`           |
+| Vue3 推荐    | ✅ 官方推荐            | 维护模式                  |
+
 
 ---
 
@@ -462,13 +531,15 @@ app.directive('focus', {
 
 ### 1. Class 组件 vs 函数组件
 
-| | Class 组件 | 函数组件 |
-|---|---|---|
-| 状态 | `this.state` | `useState` |
-| 生命周期 | 钩子方法 | `useEffect` |
-| 性能 | 相对重 | 轻量 |
-| 代码复用 | HOC、render props | 自定义 Hooks |
-| 趋势 | 逐渐淘汰 | ✅ 主流 |
+
+|      | Class 组件         | 函数组件        |
+| ---- | ---------------- | ----------- |
+| 状态   | `this.state`     | `useState`  |
+| 生命周期 | 钩子方法             | `useEffect` |
+| 性能   | 相对重              | 轻量          |
+| 代码复用 | HOC、render props | 自定义 Hooks   |
+| 趋势   | 逐渐淘汰             | ✅ 主流        |
+
 
 ---
 
@@ -493,11 +564,13 @@ useEffect(() => {
 }, [deps])  // 依赖数组
 ```
 
-| 依赖数组 | 执行时机 |
-|---|---|
-| 不传 | 每次渲染后 |
-| `[]` | 仅挂载后执行一次 |
+
+| 依赖数组     | 执行时机            |
+| -------- | --------------- |
+| 不传       | 每次渲染后           |
+| `[]`     | 仅挂载后执行一次        |
 | `[a, b]` | `a` 或 `b` 变化后执行 |
+
 
 ---
 
@@ -534,11 +607,13 @@ React 16 重写的协调引擎，核心目标：**可中断渲染**。
 
 ### 7. 受控 vs 非受控组件
 
-| | 受控组件 | 非受控组件 |
-|---|---|---|
-| 数据存储 | React state | DOM 自身 |
-| 获取值 | `value` + `onChange` | `ref.current.value` |
-| 场景 | 需要即时验证、联动 | 简单表单、文件上传 |
+
+|      | 受控组件                 | 非受控组件               |
+| ---- | -------------------- | ------------------- |
+| 数据存储 | React state          | DOM 自身              |
+| 获取值  | `value` + `onChange` | `ref.current.value` |
+| 场景   | 需要即时验证、联动            | 简单表单、文件上传           |
+
 
 ---
 
@@ -575,10 +650,14 @@ const theme = useContext(ThemeCtx)
 
 ### 10. Hooks 使用规则
 
-1. **只在函数组件或自定义 Hook 顶层调用**（不能在循环、条件、嵌套函数中调用）
-2. **只在 React 函数组件或自定义 Hook 中调用**
+**Hook 是什么：** 以 `use` 开头的函数（如 `useState`、`useEffect`），让函数组件拥有状态、副作用、上下文等能力；React 在每次渲染时按**固定调用顺序**为每个 Hook 槽位绑定对应的状态。
 
-原因：React 依赖调用**顺序**来对应每次渲染的 Hook 状态，条件/循环会打乱顺序。
+**官方两条规则（Rules of Hooks）：**
+
+1. **只在 React 函数组件或自定义 Hook 的顶层调用**——不要在循环、条件分支、或嵌套函数（例如普通回调里再调 `useState`）里调用。
+2. **只从 React 函数组件或自定义 Hook 里调用** Hook——不要在普通 JS 函数、类组件实例方法等非 Hook 环境里调用。
+
+**原因：** 内部用「链表/数组」按第 1 个、第 2 个 Hook 依次存状态；某次渲染若多调或少调了某个 Hook，**顺序错位**就会读到别人的状态或报错。
 
 ---
 
@@ -588,10 +667,29 @@ const theme = useContext(ThemeCtx)
 function useFetch(url) {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+
   useEffect(() => {
-    fetch(url).then(r => r.json()).then(d => { setData(d); setLoading(false) })
+    if (!url) return
+    const ctrl = new AbortController()
+    setLoading(true)
+    setError(null)
+
+    fetch(url, { signal: ctrl.signal })
+      .then((r) => {
+        if (!r.ok) throw new Error(r.statusText)
+        return r.json()
+      })
+      .then(setData)
+      .catch((e) => {
+        if (e.name !== "AbortError") setError(e)
+      })
+      .finally(() => setLoading(false))
+
+    return () => ctrl.abort()
   }, [url])
-  return { data, loading }
+
+  return { data, loading, error }
 }
 ```
 
@@ -661,11 +759,13 @@ CSS 解析 → CSSOM 树
 
 ### 2. 重排（Reflow）vs 重绘（Repaint）
 
-| | 重排 | 重绘 |
-|---|---|---|
-| 触发 | 几何属性变化（宽高、位置）| 视觉属性变化（颜色、背景）|
-| 开销 | 大（重新布局）| 小（仅重绘）|
-| 关系 | 必然触发重绘 | 不一定触发重排 |
+
+|     | 重排            | 重绘            |
+| --- | ------------- | ------------- |
+| 触发  | 几何属性变化（宽高、位置） | 视觉属性变化（颜色、背景） |
+| 开销  | 大（重新布局）       | 小（仅重绘）        |
+| 关系  | 必然触发重绘        | 不一定触发重排       |
+
 
 **减少重排：** 批量修改样式（`classList`）、用 `transform/opacity` 做动画（GPU 合成层）、避免频繁读取 `offsetWidth` 等布局属性。
 
@@ -681,12 +781,14 @@ CSS 解析 → CSSOM 树
 
 ### 4. HTTP 状态码
 
-| 范围 | 含义 | 常见 |
-|---|---|---|
-| 2xx | 成功 | 200 OK、201 Created、204 No Content |
-| 3xx | 重定向 | 301 永久、302 临时、304 Not Modified |
+
+| 范围  | 含义    | 常见                                           |
+| --- | ----- | -------------------------------------------- |
+| 2xx | 成功    | 200 OK、201 Created、204 No Content            |
+| 3xx | 重定向   | 301 永久、302 临时、304 Not Modified               |
 | 4xx | 客户端错误 | 400 Bad Request、401 未授权、403 禁止、404 Not Found |
-| 5xx | 服务端错误 | 500 Internal Error、502 Bad Gateway、503 不可用 |
+| 5xx | 服务端错误 | 500 Internal Error、502 Bad Gateway、503 不可用   |
+
 
 ---
 
@@ -695,6 +797,7 @@ CSS 解析 → CSSOM 树
 **同源策略：** 协议 + 域名 + 端口三者相同才算同源。
 
 **解决方案：**
+
 - **CORS（主流）：** 服务端设置响应头 `Access-Control-Allow-Origin`
 - **反向代理：** 开发时 webpack/vite 代理，生产时 nginx 转发
 - **JSONP：** 只支持 GET，利用 `<script>` 标签不受同源限制（已过时）
@@ -719,10 +822,12 @@ CSS 解析 → CSSOM 树
 
 ### 7. XSS vs CSRF
 
-| | XSS（跨站脚本）| CSRF（跨站请求伪造）|
-|---|---|---|
-| 原理 | 注入恶意脚本在受害者浏览器执行 | 诱导受害者发送已认证的请求 |
-| 防御 | 转义输出、CSP、HttpOnly Cookie | CSRF Token、SameSite Cookie、验证 Referer |
+
+|     | XSS（跨站脚本）                | CSRF（跨站请求伪造）                          |
+| --- | ------------------------ | ------------------------------------- |
+| 原理  | 注入恶意脚本在受害者浏览器执行          | 诱导受害者发送已认证的请求                         |
+| 防御  | 转义输出、CSP、HttpOnly Cookie | CSRF Token、SameSite Cookie、验证 Referer |
+
 
 ---
 
@@ -740,23 +845,27 @@ box-sizing: border-box   // IE 模型（推荐，更直观）
 
 ### 9. Flex vs Grid
 
-| | Flexbox | Grid |
-|---|---|---|
-| 维度 | 一维（行或列）| 二维（行和列）|
-| 场景 | 导航栏、按钮组、单行/列布局 | 整体页面布局、卡片网格 |
-| 对齐 | `justify-content`、`align-items` | `justify-items`、`align-items` + 区域定义 |
+
+|     | Flexbox                         | Grid                                 |
+| --- | ------------------------------- | ------------------------------------ |
+| 维度  | 一维（行或列）                         | 二维（行和列）                              |
+| 场景  | 导航栏、按钮组、单行/列布局                  | 整体页面布局、卡片网格                          |
+| 对齐  | `justify-content`、`align-items` | `justify-items`、`align-items` + 区域定义 |
+
 
 ---
 
 ### 10. 前端性能优化
 
 **加载优化：**
+
 - 资源压缩（gzip/brotli）、代码分割、懒加载、CDN
 - 减少 HTTP 请求（合并资源、雪碧图）
 - 图片优化（WebP、适当尺寸、懒加载）
 - 预加载关键资源 `<link rel="preload">`
 
 **运行时优化：**
+
 - 减少重排重绘（transform/opacity 动画）
 - 虚拟滚动（大列表）
 - Web Worker（CPU 密集任务移出主线程）
@@ -766,12 +875,14 @@ box-sizing: border-box   // IE 模型（推荐，更直观）
 
 ### 11. localStorage vs sessionStorage vs Cookie
 
-| | localStorage | sessionStorage | Cookie |
-|---|---|---|---|
-| 大小 | ~5MB | ~5MB | ~4KB |
-| 生命周期 | 永久（手动清除）| 标签关闭清除 | 设置过期时间 |
-| 随请求发送 | 否 | 否 | 是 |
-| 作用域 | 同源 | 同源+同标签页 | 可设置域/路径 |
+
+|       | localStorage | sessionStorage | Cookie  |
+| ----- | ------------ | -------------- | ------- |
+| 大小    | ~5MB         | ~5MB           | ~4KB    |
+| 生命周期  | 永久（手动清除）     | 标签关闭清除         | 设置过期时间  |
+| 随请求发送 | 否            | 否              | 是       |
+| 作用域   | 同源           | 同源+同标签页        | 可设置域/路径 |
+
 
 ---
 

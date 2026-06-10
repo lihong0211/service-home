@@ -41,7 +41,7 @@
 
 | 序号 | 文档 | 对应代码 | 核心技术 |
 |------|------|---------|---------|
-| 01 | [向量库层](./01_vector_db.md) | `vector_db.py` | FAISS IndexIDMap、双存储同步、增量 Embedding |
+| 01 | [向量库层](./01_vector_db.md) | `vector_db_qdrant.py` / `vector_db.py` | Qdrant（默认）+ FAISS（兼容/历史）、双存储同步、增量 Embedding |
 | 02 | [RAG 检索增强生成层](./02_rag.md) | `rag.py`、`rag_enhance.py` | Query 改写（CASEA）、DashScope Rerank、流水线可观测性 |
 | 03 | [知识库管理层](./03_knowledge_base.md) | `knowledge.py` | 多格式文档解析、分段策略、上传与向量化解耦 |
 | 04 | [LangGraph 多 Agent 工作流层](./04_agent.md) | `agent/`（含医生智能体 `agent_doctor.py`） | StateGraph、四种 Agent 范式、医生多轮问诊、动态图可视化 |
@@ -50,6 +50,7 @@
 | 07 | [对话能力层](./07_chat.md) | `chat.py`、`ollama_chat.py` | 本地 Ollama、流式 SSE、OCR 视觉去重 |
 | 08 | [工具能力层](./08_tools.md) | `function_call.py`、`text2sql.py`、`tts.py`、`stt.py`、`image_gen.py` | Function Calling、Text2SQL、Edge-TTS、Whisper、SDXL |
 | 09 | [模型微调实验层](./09_finetuning.md) | `finetuning/` | LoRA/QLoRA、GRPO/R1、Unsloth、视觉微调 |
+| 12 | [BM25（Elasticsearch）检索](./12_bm25_elasticsearch.md) | `bm25_es.py` | MySQL→ES 同步、BM25 关键词检索、RAG hybrid 兜底 |
 
 ---
 
@@ -89,7 +90,8 @@ MCP 工具集层 (06)
 
 | 类别 | 技术 |
 |------|------|
-| 向量检索 | FAISS（IndexFlatL2 + IndexIDMap）、NumPy |
+| 向量检索 | Qdrant（默认）、FAISS（兼容/历史）、NumPy |
+| 关键词检索（BM25，可选） | Elasticsearch（MySQL→ES 同步，BM25 检索兜底） |
 | Embedding | DashScope `text-embedding-v4`（1024 维） |
 | LLM 推理（云端） | DashScope（qwen-turbo、qwen3-rerank 等） |
 | LLM 推理（本地） | Ollama（DeepSeek-R1、Qwen3-VL、自定义模型） |

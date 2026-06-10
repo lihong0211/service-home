@@ -1,0 +1,21 @@
+name,department,salary,experience_years,performance_score,city
+Alice Johnson,Engineering,95000,5,4.2,Beijing
+Bob Smith,Marketing,72000,3,3.8,Shanghai
+Carol Wang,Engineering,110000,8,4.7,Beijing
+David Lee,Sales,68000,2,3.5,Guangzhou
+Emma Chen,HR,65000,4,4.0,Shanghai
+Frank Liu,Engineering,88000,4,4.1,Beijing
+Grace Zhang,Marketing,78000,6,4.3,Shenzhen
+Henry Wu,Sales,75000,5,3.9,Shanghai
+Iris Yang,HR,62000,1,3.6,Beijing
+Jack Ma,Engineering,125000,10,4.8,Hangzhou
+Karen Zhou,Marketing,82000,7,4.4,Shanghai
+Leo Sun,Sales,70000,3,3.7,Guangzhou
+Mia Huang,Engineering,98000,6,4.5,Beijing
+Nick Zhao,HR,67000,3,3.8,Shenzhen
+Olivia Li,Engineering,105000,7,4.6,Shanghai
+Peter Pan,Marketing,69000,2,3.4,Beijing
+Quinn He,Sales,73000,4,4.0,Guangzhou
+Rachel Xu,Engineering,92000,5,4.3,Shanghai
+Sam Guo,HR,63000,2,3.5,Beijing
+Tina Fang,Marketing,85000,8,4.5,Shenzhen

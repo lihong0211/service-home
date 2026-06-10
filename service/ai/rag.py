@@ -8,9 +8,10 @@ RAG 模块：基于知识库的检索与问答。
 
 from fastapi import Request
 
-from service.ai.vector_db import client, search_in_db
+from service.ai.vector_db_qdrant import client, search_in_db
 from utils.http_body import read_json_optional
 from service.ai.rag_enhance import query_rewrite, rerank_documents
+from service.ai import bm25_es
 from model.ai import VectorDb, KnowledgeBase
 
 
@@ -31,6 +32,60 @@ def _results_to_sources(results: list, use_relevance_score: bool = False) -> lis
     return sources
 
 
+def _merge_dense_and_bm25(dense: list[dict], bm25_hits: list[dict], top_k: int) -> list[dict]:
+    """
+    简单融合：对 doc_id 去重，优先保留 dense 的 distance/score，同时保留 bm25_score 供调试。
+    当前实现用于“BM25 兜底召回”，不是严格的融合打分（后续可升级为 RRF/加权）。
+    """
+    if not bm25_hits:
+        return dense[:top_k]
+    best: dict[str, dict] = {}
+    # 先放 dense
+    for r in dense or []:
+        doc = r.get("doc") if isinstance(r.get("doc"), dict) else r
+        did = str((doc or {}).get("id") or "")
+        if did:
+            best[did] = r
+    # 再融合 bm25
+    for h in bm25_hits:
+        doc = h.get("doc") if isinstance(h.get("doc"), dict) else None
+        did = str((doc or {}).get("id") or "")
+        if not did:
+            continue
+        if did in best:
+            # 保留 dense 结果，但附加 bm25_score
+            best[did]["bm25_score"] = h.get("score")
+            continue
+        best[did] = {
+            "doc": doc,
+            "score": None,
+            "distance": None,
+            "bm25_score": h.get("score"),
+            "rank": 0,
+        }
+    merged = list(best.values())
+    # 排序：优先 dense 的 rank，其次 bm25_score
+    def _key(x: dict):
+        r = x.get("rank")
+        if isinstance(r, int) and r > 0:
+            return (0, r, 0.0)
+        s = x.get("bm25_score")
+        try:
+            s = float(s)
+        except Exception:
+            s = 0.0
+        return (1, 10**9, -s)
+
+    merged.sort(key=_key)
+    # 重置 rank
+    out = []
+    for i, x in enumerate(merged[: max(1, top_k)]):
+        xx = dict(x)
+        xx["rank"] = i + 1
+        out.append(xx)
+    return out
+
+
 def rag_chat(
     kb_id: int = None,
     kb_name: str = None,
@@ -39,6 +94,13 @@ def rag_chat(
     model: str = "qwen-turbo",
     enable_query_rewrite: bool = False,
     enable_rerank: bool = False,
+    enable_hybrid: bool = True,
+    enable_bm25: bool = True,
+    enable_mmr: bool = True,
+    mmr_lambda: float = 0.5,
+    score_threshold: float | None = None,
+    category: str | None = None,
+    metadata_filter: dict | None = None,
     conversation_history: str = "",
     query_rewrite_model: str = "qwen-turbo",
     rerank_model: str = "qwen3-rerank",
@@ -104,7 +166,33 @@ def rag_chat(
 
     # ---------- 2. 检索（Rerank 时多召一些再精排） ----------
     retrieve_k = min(20, top_k * 2) if enable_rerank else top_k
-    results = search_in_db(name, search_query, top_k=retrieve_k)
+    results = search_in_db(
+        name,
+        search_query,
+        top_k=retrieve_k,
+        category=category,
+        metadata_filter=metadata_filter,
+        enable_hybrid=enable_hybrid,
+        use_mmr=enable_mmr,
+        mmr_lambda=mmr_lambda,
+        candidate_k=min(80, max(retrieve_k, retrieve_k * 5)) if (enable_mmr or enable_hybrid) else None,
+        score_threshold=score_threshold,
+    )
+    # BM25 兜底召回（可选）：从 ES 做关键词检索，合并到 dense 结果中
+    if enable_bm25:
+        try:
+            bm25_res = bm25_es.bm25_search(
+                vector_db_id=int(row.id),
+                query=search_query,
+                top_k=min(50, max(retrieve_k, retrieve_k * 2)),
+                category=category,
+                metadata_filter=metadata_filter,
+            )
+            if bm25_res.get("ok") and bm25_res.get("hits"):
+                results = _merge_dense_and_bm25(results, bm25_res["hits"], retrieve_k)
+        except Exception:
+            # ES 作为可选组件：失败不影响主流程
+            pass
     if not results:
         rewritten_query = query_rewrite_state.get("rewritten_query") if query_rewrite_state else None
         return {
@@ -211,6 +299,24 @@ async def rag_ask_api(request: Request):
     model = (data.get("model") or "qwen-turbo").strip() or "qwen-turbo"
     enable_query_rewrite = bool(data.get("enable_query_rewrite", False))
     enable_rerank = bool(data.get("enable_rerank", False))
+    enable_hybrid = bool(data.get("enable_hybrid", True))
+    enable_bm25 = bool(data.get("enable_bm25", True))
+    enable_mmr = bool(data.get("enable_mmr", True))
+    mmr_lambda = data.get("mmr_lambda", 0.5)
+    try:
+        mmr_lambda = float(mmr_lambda)
+    except (TypeError, ValueError):
+        mmr_lambda = 0.5
+    mmr_lambda = max(0.0, min(1.0, mmr_lambda))
+    score_threshold = data.get("score_threshold")
+    if score_threshold is not None:
+        try:
+            score_threshold = float(score_threshold)
+        except (TypeError, ValueError):
+            score_threshold = None
+    category = data.get("category")
+    metadata_filter = data.get("metadata")
+    metadata_filter = metadata_filter if isinstance(metadata_filter, dict) else None
     conversation_history = (data.get("conversation_history") or "").strip()
     if isinstance(data.get("conversation_history"), list):
         conversation_history = "\n".join(
@@ -224,6 +330,13 @@ async def rag_ask_api(request: Request):
         model=model,
         enable_query_rewrite=enable_query_rewrite,
         enable_rerank=enable_rerank,
+        enable_hybrid=enable_hybrid,
+        enable_bm25=enable_bm25,
+        enable_mmr=enable_mmr,
+        mmr_lambda=mmr_lambda,
+        score_threshold=score_threshold,
+        category=category,
+        metadata_filter=metadata_filter,
         conversation_history=conversation_history,
     )
     return {"code": 0, "msg": "ok", "data": out}
@@ -293,6 +406,24 @@ async def rag_search_api(request: Request):
         top_k = 3
     enable_query_rewrite = bool(data.get("enable_query_rewrite", False))
     enable_rerank = bool(data.get("enable_rerank", False))
+    enable_hybrid = bool(data.get("enable_hybrid", True))
+    enable_bm25 = bool(data.get("enable_bm25", True))
+    enable_mmr = bool(data.get("enable_mmr", True))
+    mmr_lambda = data.get("mmr_lambda", 0.5)
+    try:
+        mmr_lambda = float(mmr_lambda)
+    except (TypeError, ValueError):
+        mmr_lambda = 0.5
+    mmr_lambda = max(0.0, min(1.0, mmr_lambda))
+    score_threshold = data.get("score_threshold")
+    if score_threshold is not None:
+        try:
+            score_threshold = float(score_threshold)
+        except (TypeError, ValueError):
+            score_threshold = None
+    category = data.get("category")
+    metadata_filter = data.get("metadata")
+    metadata_filter = metadata_filter if isinstance(metadata_filter, dict) else None
     conversation_history = (data.get("conversation_history") or "").strip()
     if isinstance(data.get("conversation_history"), list):
         conversation_history = "\n".join(str(x) for x in data["conversation_history"]).strip()
@@ -315,7 +446,33 @@ async def rag_search_api(request: Request):
     # 检索
     retrieve_k = min(20, top_k * 2) if enable_rerank else top_k
     try:
-        results = search_in_db(kb_name, search_query, top_k=retrieve_k)
+        results = search_in_db(
+            kb_name,
+            search_query,
+            top_k=retrieve_k,
+            category=category,
+            metadata_filter=metadata_filter,
+            enable_hybrid=enable_hybrid,
+            use_mmr=enable_mmr,
+            mmr_lambda=mmr_lambda,
+            candidate_k=min(80, max(retrieve_k, retrieve_k * 5)) if (enable_mmr or enable_hybrid) else None,
+            score_threshold=score_threshold,
+        )
+        if enable_bm25:
+            try:
+                vdb_row = VectorDb.select_one_by({"name": kb_name})
+                if vdb_row:
+                    bm25_res = bm25_es.bm25_search(
+                        vector_db_id=int(vdb_row.id),
+                        query=search_query,
+                        top_k=min(50, max(retrieve_k, retrieve_k * 2)),
+                        category=category,
+                        metadata_filter=metadata_filter,
+                    )
+                    if bm25_res.get("ok") and bm25_res.get("hits"):
+                        results = _merge_dense_and_bm25(results, bm25_res["hits"], retrieve_k)
+            except Exception:
+                pass
     except Exception as e:
         err_msg = str(e)
         if "timeout" in err_msg.lower() or "timed out" in err_msg.lower():

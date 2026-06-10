@@ -46,8 +46,14 @@ POST /ai/rag/ask
       │   识别类型：上下文依赖/对比/模糊指代/多意图/反问/无需改写
       │   输出：{rewritten_query, query_type, confidence}
       │
-      ├──► search_in_db(db_name, search_query, top_k * 2)
-      │     FAISS L2 检索，Rerank 时多召一倍候选
+      ├──► search_in_db(db_name, search_query, retrieve_k)
+      │     Qdrant COSINE 向量检索
+      │     +（可选）Hybrid text 匹配兜底
+      │     +（可选）MMR 多样性选择
+      │     +（可选）score_threshold 阈值过滤
+      │
+      ├─[enable_bm25=True]──────► Elasticsearch BM25（关键词兜底召回）
+      │     通过 MySQL→ES 同步的倒排索引，用于专有名词/编号/数字类查询
       │
       ├─[enable_rerank=True]──────► rerank_documents(query, results, top_n)
       │   DashScope qwen3-rerank

@@ -90,7 +90,7 @@ class _DisneyRagAgent:
             return
 
         try:
-            from service.ai.vector_db import search_in_db, client
+            from service.ai.vector_db_qdrant import search_in_db, client
 
             # ── Step 1: 向量检索（step 输出与 langchain 的 node output 一致：含 query/sources 等）──
             row = _resolve_vector_db()
