@@ -148,6 +148,8 @@ def create_app() -> FastAPI:
 
     from routes import api_router
 
+    # 兼容旧前端（/ai/*）与新前缀（/api/ai/*）并存
+    app.include_router(api_router)
     app.include_router(api_router, prefix="/api")
 
     register_websocket_routes(app)

@@ -1,0 +1,154 @@
+{
+  "project": "全栈 AI 功能扩展",
+  "description": "参考 awesome-llm-apps，为 service-home（后端）+ ai-dashboard（前端）逐功能实现 8 个新 AI 应用，每个 task 覆盖完整前后端",
+  "repos": {
+    "backend": "/Users/lihong/Desktop/personal/code/service-home",
+    "frontend": "/Users/lihong/Desktop/personal/code/ai-dashboard"
+  },
+  "tasks": [
+    {
+      "id": 1,
+      "name": "AI数据分析",
+      "description": "用户上传 CSV/Excel 文件，输入自然语言问题，后端用 pandas+DuckDB 执行数据查询，前端展示数据预览和查询结果。",
+      "passes": true,
+      "backend_steps": [
+        "安装依赖：cd service-home && pip install duckdb",
+        "创建 service/ai/data_analysis.py：upload_data_file_api(request) 接受 multipart 文件，pandas 读取 CSV/Excel，存入内存 DuckDB，返回 {session_id, columns:[{name,type}], row_count, preview:[[rows]]}；query_data_api(request) 接受 {session_id, question}，用 DashScope qwen-turbo 将自然语言转为 DuckDB SQL，执行后返回 {sql, columns, rows}",
+        "routes/ai.py 顶部添加 from service.ai.data_analysis import upload_data_file_api, query_data_api",
+        "register_ai() 末尾添加：_ai_route(router, '/ai/data-analysis/upload', upload_data_file_api, ['POST']) 和 _ai_route(router, '/ai/data-analysis/query', query_data_api, ['POST'])",
+        "测试：python -c 'from routes.ai import register_ai; print(\"OK\")' 然后 curl 测试两个 endpoint"
+      ],
+      "frontend_steps": [
+        "创建 ai-dashboard/src/service/data-analysis.ts：uploadDataFile(file: File) 和 queryData(sessionId: string, question: string) 两个函数",
+        "创建 ai-dashboard/src/pages/DataAnalysis.tsx：上方为 Upload.Dragger（接受 .csv/.xlsx/.xls），上传后显示列信息和前10行预览（Table 组件）；下方为 Input+Button，查询后展示生成的 SQL（代码块）和结果表格",
+        "routes.tsx：import DataAnalysis，skillsRoutes 末尾（coze 之前）添加 { path: 'data-analysis', component: DataAnalysis, label: 'Data Analysis' }",
+        "MainLayout.tsx：import BarChartOutlined，children 中（Portal 之前）添加 { key: '/skills/data-analysis', icon: <BarChartOutlined />, label: 'Data Analysis' }",
+        "cd ai-dashboard && npm run build（无 TS 错误），Playwright 打开 http://localhost:5173/skills/data-analysis 截图确认"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Chat with GitHub",
+      "description": "用户输入 GitHub 仓库 URL，后端下载代码文件并建立向量索引，前端提供聊天界面对仓库代码进行 RAG 问答。",
+      "passes": false,
+      "backend_steps": [
+        "安装依赖：pip install PyGithub",
+        "创建 service/ai/github_chat.py：github_index_api(request) 接受 {repo_url, github_token?}，解析 owner/repo，用 PyGithub 下载代码文件（过滤 .py/.js/.ts/.md，单文件限 100KB，最多200个文件），分段后 DashScope embedding 向量化存入 Qdrant（collection=github_{owner}_{repo}），返回 {index_id, file_count}；github_ask_api(request) 接受 {index_id, question}，向量检索后 qwen-turbo 生成回答，流式 StreamingResponse 返回",
+        "routes/ai.py 添加 import 和两条路由：/ai/github-chat/index（POST）、/ai/github-chat/ask（POST）",
+        "测试：curl 用小型公开仓库测试 index，再测试 ask"
+      ],
+      "frontend_steps": [
+        "创建 src/service/github-chat.ts：indexRepo(repoUrl, token?) 和 askGithub(indexId, question, onChunk) 两个函数",
+        "创建 src/pages/GitHubChat.tsx：顶部 GitHub URL 输入框+可选 Token 输入+Index 按钮；索引中 Loading；完成后显示 {file_count} 并展示聊天区（消息列表+输入框，流式回答，参考 Chat.tsx 模式）",
+        "routes.tsx 添加路由 { path: 'github-chat', ... }，MainLayout.tsx 添加菜单 { key: '/skills/github-chat', icon: <GithubOutlined />, label: 'GitHub Chat' }",
+        "npm run build + Playwright 测试"
+      ]
+    },
+    {
+      "id": 3,
+      "name": "Chat with YouTube",
+      "description": "用户输入 YouTube 视频 URL，后端提取字幕并建立向量索引，前端提供对视频内容的 RAG 问答。",
+      "passes": false,
+      "backend_steps": [
+        "安装依赖：pip install youtube-transcript-api",
+        "创建 service/ai/youtube_chat.py：youtube_index_api(request) 接受 {video_url}，提取 video_id，用 youtube-transcript-api 获取字幕（优先 zh-Hans/zh/en），按 1000 字分段，DashScope embedding 向量化存入 Qdrant（collection=youtube_{video_id}），返回 {index_id, video_id, segment_count, language}；youtube_ask_api(request) 接受 {index_id, question}，RAG 检索后流式返回答案",
+        "routes/ai.py 添加 import 和两条路由：/ai/youtube-chat/index（POST）、/ai/youtube-chat/ask（POST）",
+        "测试：用有字幕的 YouTube 视频 URL 测试"
+      ],
+      "frontend_steps": [
+        "创建 src/service/youtube-chat.ts：indexVideo(videoUrl) 和 askYoutube(indexId, question, onChunk) 两个函数",
+        "创建 src/pages/YouTubeChat.tsx：顶部 YouTube URL 输入+Index 按钮；完成后显示视频信息（video_id/字幕段数/语言）；聊天区支持流式回答",
+        "routes.tsx 添加路由 { path: 'youtube-chat', ... }，MainLayout.tsx 添加菜单（icon: <VideoCameraOutlined />）",
+        "npm run build + Playwright 测试"
+      ]
+    },
+    {
+      "id": 4,
+      "name": "对话持久记忆",
+      "description": "对话系统增加用户级持久记忆，AI 记住用户重要信息并在后续对话中自动引用，前端展示聊天界面和记忆面板。",
+      "passes": false,
+      "backend_steps": [
+        "创建 model/ai/chat_memory.py：ORM 模型，字段 id/user_id(String 64, index)/content(Text)/memory_type(String 20)/created_at，继承 BaseModel",
+        "创建 service/ai/memory_chat.py：memory_chat_api(request) 接受 {user_id, message}，读取该 user 的长期记忆（最近20条）拼入 system prompt，调用 Ollama 对话（流式），对话后用 qwen-turbo 从本轮对话提取重要信息写入 DB；list_memories_api(request) 接受 query param user_id 返回记忆列表；clear_memories_api(request) 接受 {user_id} 删除所有记忆",
+        "routes/ai.py 添加 import 和三条路由：/ai/memory-chat/chat（POST）、/ai/memory-chat/memories（GET）、/ai/memory-chat/memories（DELETE）",
+        "测试：多轮对话后 curl GET memories 验证记忆已持久化"
+      ],
+      "frontend_steps": [
+        "创建 src/service/memory-chat.ts：memoryChatStream(userId, message, onChunk)、getMemories(userId)、clearMemories(userId) 三个函数",
+        "创建 src/pages/MemoryChat.tsx：顶部用户 ID 输入框（默认 'user_001'）；主体左右布局：左侧(70%)聊天区（流式）；右侧(30%)记忆面板（记忆列表+清除按钮，每次发消息后自动刷新）",
+        "routes.tsx 添加路由 { path: 'memory-chat', ... }，MainLayout.tsx 添加菜单（icon: <ThunderboltOutlined />）",
+        "npm run build + Playwright 测试"
+      ]
+    },
+    {
+      "id": 5,
+      "name": "Mixture of Agents",
+      "description": "同一问题并发发给多个本地 Ollama 模型，各自独立回答，再由 DashScope qwen-turbo 聚合最优答案，前端并排展示各模型回答和聚合结果。",
+      "passes": false,
+      "backend_steps": [
+        "创建 service/ai/mixture_agents.py：list_models_api(request) 调用 Ollama GET http://localhost:11434/api/tags 返回模型列表；mixture_chat_api(request) 接受 {question, models:[...]}，asyncio.gather 并发调用各 Ollama 模型，收集回答后用 DashScope qwen-turbo 综合，流式返回最终答案（同时在首个 chunk 里附带各模型原始回答供前端展示）",
+        "routes/ai.py 添加 import 和两条路由：/ai/mixture-agents/models（GET）、/ai/mixture-agents/chat（POST）",
+        "测试：curl models 确认有模型可用，curl chat 验证多模型并发和聚合"
+      ],
+      "frontend_steps": [
+        "创建 src/service/mixture-agents.ts：getAvailableModels() 和 mixtureChat(question, models, onChunk) 两个函数",
+        "创建 src/pages/MixtureAgents.tsx：顶部模型多选（Checkbox.Group，从 API 加载）+问题输入+发送；结果区：上方各模型回答卡片网格（每模型一卡，显示模型名+内容），下方聚合结果区（特殊高亮样式）",
+        "routes.tsx 添加路由 { path: 'mixture-agents', ... }，MainLayout.tsx 添加菜单（icon: <TeamOutlined />）",
+        "npm run build + Playwright 测试"
+      ]
+    },
+    {
+      "id": 6,
+      "name": "简历与职位匹配",
+      "description": "用户上传简历 PDF + 输入职位描述，AI 提取简历信息与 JD 对比，输出匹配分数和建议，前端展示分析报告。",
+      "passes": false,
+      "backend_steps": [
+        "创建 service/ai/resume_matcher.py：resume_match_api(request) 接受 multipart（resume_pdf 文件 + job_description 文本字段），PyPDF2 解析 PDF，DashScope qwen-turbo 分两步处理：1）提取结构化简历（教育/经历/技能），2）与 JD 对比生成分析，返回 {score:int, strengths:[str], gaps:[str], suggestions:[str], resume_summary:str}",
+        "routes/ai.py 添加 import 和一条路由：/ai/resume-match（POST）",
+        "测试：curl multipart 上传 PDF + job_description 字段测试"
+      ],
+      "frontend_steps": [
+        "创建 src/service/resume-matcher.ts：matchResume(resumeFile: File, jobDescription: string) 函数（FormData 上传）",
+        "创建 src/pages/ResumeMatcher.tsx：上方两列：左侧 Upload.Dragger（.pdf），右侧 TextArea（职位描述）；分析按钮；结果区：匹配分数（大数字 + Progress 圆形），下方三列：优势（绿 Tag）/差距（红 Tag）/建议（有序列表）",
+        "routes.tsx 添加路由 { path: 'resume-match', ... }，MainLayout.tsx 添加菜单（icon: <FileTextOutlined />）",
+        "npm run build + Playwright 测试"
+      ]
+    },
+    {
+      "id": 7,
+      "name": "AI新闻摘要Agent",
+      "description": "从预置 RSS 源抓取科技/AI 新闻，LLM 生成中文摘要和今日要闻总结，前端展示新闻聚合面板。",
+      "passes": false,
+      "backend_steps": [
+        "安装依赖：pip install feedparser",
+        "创建 service/ai/news_agent.py：预置 RSS_SOURCES（MIT Tech Review / Hacker News / The Verge / 36kr AI 等5-8个）；fetch_articles_api(request) 并发抓取（feedparser），取近24小时文章（最多30篇），qwen-turbo 为每篇生成50字中文摘要，返回 {articles:[{title,url,source,published_at,summary}]}；news_summary_api(request) 将所有文章汇总，qwen-turbo 生成200字今日要闻总结，返回 {summary:str, article_count:int, generated_at:str}",
+        "routes/ai.py 添加 import 和两条路由：/ai/news/articles（GET）、/ai/news/summary（GET）",
+        "测试：curl 两个 endpoint 验证返回结构"
+      ],
+      "frontend_steps": [
+        "创建 src/service/news-agent.ts：fetchNewsArticles() 和 getNewsSummary() 两个函数",
+        "创建 src/pages/NewsAgent.tsx：页面加载时自动请求数据；顶部今日要闻总结卡片（蓝色背景，含文章数+右上角刷新按钮）；主体新闻卡片网格（2-3列，每卡显示来源徽章/标题可点击/AI摘要/发布时间）",
+        "routes.tsx 添加路由 { path: 'news-agent', ... }，MainLayout.tsx 添加菜单（icon: <GlobalOutlined />）",
+        "npm run build + Playwright 测试"
+      ]
+    },
+    {
+      "id": 8,
+      "name": "网页智能提取Agent",
+      "description": "用户输入 URL，AI 抓取网页正文并提取结构化信息，支持自定义提取字段，前端展示提取结果。",
+      "passes": false,
+      "backend_steps": [
+        "安装依赖：pip install newspaper3k lxml_html_clean",
+        "创建 service/ai/web_scraper.py：web_scrape_extract_api(request) 接受 {url:str, schema?:{field:description}}，newspaper3k Article 抓取并解析网页（download + parse），若无 schema 则默认提取标题/摘要/关键词/正文摘要，若有 schema 则将网页内容和 schema 发给 qwen-turbo 按字段提取，返回 {url, title, extracted:{...}, word_count:int}",
+        "routes/ai.py 添加 import 和一条路由：/ai/web-scraper/extract（POST）",
+        "测试：curl 几个不同新闻 URL（带和不带 schema）"
+      ],
+      "frontend_steps": [
+        "创建 src/service/web-scraper.ts：extractWebContent(url: string, schema?: Record<string, string>) 函数",
+        "创建 src/pages/WebScraper.tsx：URL 输入框；可折叠的自定义 Schema 区（Form.List，key-value 键值对）；提取按钮；结果区：标题+字数统计，下方 <pre> 展示 JSON 提取结果",
+        "routes.tsx 添加路由 { path: 'web-scraper', ... }，MainLayout.tsx 添加菜单（icon: <SearchOutlined />）",
+        "npm run build + Playwright 测试"
+      ]
+    }
+  ]
+}

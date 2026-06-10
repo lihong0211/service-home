@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from starlette.responses import Response
 
@@ -29,7 +30,11 @@ def normalize_api_result(result: Any) -> Response:
         h = dict(headers or {})
 
         if isinstance(body, dict):
-            return JSONResponse(content=body, status_code=int(status_code), headers=h)
+            return JSONResponse(
+                content=jsonable_encoder(body),
+                status_code=int(status_code),
+                headers=h,
+            )
         if isinstance(body, (StreamingResponse, FileResponse, Response)):
             for k, v in h.items():
                 body.headers[k] = v
@@ -42,6 +47,6 @@ def normalize_api_result(result: Any) -> Response:
         )
 
     if isinstance(result, dict):
-        return JSONResponse(content=result, status_code=200)
+        return JSONResponse(content=jsonable_encoder(result), status_code=200)
 
     return JSONResponse(content={"code": 500, "msg": "unsupported response type"}, status_code=500)

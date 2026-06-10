@@ -1,0 +1,12 @@
+# service-home AI功能扩展 - 进度日志
+
+本文件记录每个 AI 功能 Task 的实现过程，由 Agent 自动写入。
+
+---
+
+## [2026-06-10] - Task 1: AI数据分析
+### 后端实现：service/ai/data_analysis.py（upload_data_file_api + query_data_api），routes/ai.py 注册 /ai/data-analysis/upload 和 /ai/data-analysis/query
+### 前端实现：src/service/data-analysis.ts（API层），src/pages/DataAnalysis.tsx（Upload Dragger + 预览表格 + 自然语言查询 + SQL展示 + 结果表格），routes.tsx + MainLayout.tsx 注册路由和菜单
+### 测试结果：后端 curl 上传CSV成功返回 session_id/columns/preview，curl query 自然语言"What is the average salary by department?"生成正确SQL并返回数据；前端 npm run build 无TS错误，Playwright截图确认页面正常渲染，菜单高亮Data Analysis
+### 注意事项：DuckDB session存内存dict，重启后丢失需重传文件；DASHSCOPE_API_KEY 在系统env中（非.env文件），部署时需注意
+

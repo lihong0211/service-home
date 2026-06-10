@@ -76,9 +76,10 @@ from service.ai.knowledge import (
     delete_knowledge_base_document_api,
 )
 from service.ai.rag import rag_ask_api, rag_search_api
+from service.ai.bm25_es import bm25_sync_api
 from service.ai.text2sql import text2sql_api, table_data_api
 from service.ai.files import upload_file_api, list_files_api, preview_file_api
-from service.ai.vector_db import (
+from service.ai.vector_db_qdrant import (
     list_api as vector_db_list_api,
     create_api as vector_db_create_api,
     detail_api as vector_db_detail_api,
@@ -101,6 +102,7 @@ from service.ai.a2a import a2a_chain_api, a2a_chain_stream_api
 from service.ai.finetuning.finetuning import finetuning_chat_api, list_lora_options_api
 from service.ai.docs import service_ai_doc_api
 from service.ai.agent.agent_doctor import doctor_chat_api, doctor_session_api
+from service.ai.data_analysis import upload_data_file_api, query_data_api
 
 
 async def _dispatch_ai_view(view, request: Request, **path_kwargs):
@@ -124,18 +126,39 @@ def _ai_route(
 ):
     """注册 AI 业务视图；DB 通过 SessionDep 注入并写入 ContextVar 供 db.session 使用。"""
     if path_params:
-        async def handler(request: Request, db: SessionDep, **kwargs):
-            set_request_session(db)
-            try:
-                conv = {
-                    k: (param_types[k](v) if param_types and k in param_types else v)
-                    for k, v in kwargs.items()
-                }
-                result = await _dispatch_ai_view(view, request, **conv)
-                return normalize_api_result(result)
-            finally:
-                clear_request_session()
-
+        # FastAPI 不会把路径参数灌进 **kwargs，会把 kwargs 当成 Query 字段 → 422。
+        # 必须为每个 {path_var} 生成显式形参（仅允许 int/str，来自本文件注册表）。
+        param_types = param_types or {}
+        ann_parts: list[str] = []
+        for name in path_params:
+            t = param_types.get(name, str)
+            if t is int:
+                ann_parts.append(f"{name}: int")
+            else:
+                ann_parts.append(f"{name}: str")
+        ann_sig = ", ".join(ann_parts)
+        conv_literal = ", ".join(f'"{p}": {p}' for p in path_params)
+        # 闭包捕获 view；exec 仅用于生成带正确签名的 async 函数，便于 OpenAPI/依赖注入识别 Path
+        src = f"""async def handler(request: Request, db: SessionDep, {ann_sig}):
+    set_request_session(db)
+    try:
+        conv = {{{conv_literal}}}
+        result = await _dispatch_ai_view(view, request, **conv)
+        return normalize_api_result(result)
+    finally:
+        clear_request_session()
+"""
+        namespace = {
+            "Request": Request,
+            "SessionDep": SessionDep,
+            "set_request_session": set_request_session,
+            "clear_request_session": clear_request_session,
+            "_dispatch_ai_view": _dispatch_ai_view,
+            "normalize_api_result": normalize_api_result,
+            "view": view,
+        }
+        exec(src, namespace)
+        handler = namespace["handler"]
         handler.__name__ = f"wrap_{getattr(view, '__name__', 'unknown')}"
         router.add_api_route(path, handler, methods=methods)
     else:
@@ -228,6 +251,10 @@ def register_ai(router: APIRouter):
     _ai_route(router, "/ai/vector-db/category/delete", vector_db_category_delete_api, ["POST"])
     _ai_route(router, "/ai/vector-db/search", vector_db_search_api, ["POST"])
 
+    # BM25（Elasticsearch，可选组件）
+    # 仅提供同步接口：检索只在 RAG 内部作为兜底启用（enable_bm25=true）
+    _ai_route(router, "/ai/bm25/sync", bm25_sync_api, ["POST"])
+
     _ai_route(router, "/ai/rag/ask", rag_ask_api, ["POST"])
     _ai_route(router, "/ai/rag/search", rag_search_api, ["POST"])
     _ai_route(router, "/ai/text2sql", text2sql_api, ["POST"])
@@ -271,3 +298,5 @@ def register_ai(router: APIRouter):
     _ai_route(router, "/ai/doctor/chat", doctor_chat_api, ["POST"])
     _ai_route(router, "/ai/doctor/session/{session_id}", doctor_session_api, ["GET"], ["session_id"])
     _ai_route(router, "/ai/docs/{doc_id}", service_ai_doc_api, ["GET"], ["doc_id"], {"doc_id": int})
+    _ai_route(router, "/ai/data-analysis/upload", upload_data_file_api, ["POST"])
+    _ai_route(router, "/ai/data-analysis/query", query_data_api, ["POST"])
