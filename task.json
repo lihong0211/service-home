@@ -54,7 +54,7 @@
       "id": 3,
       "name": "Chat with YouTube",
       "description": "用户输入 YouTube 视频 URL，后端提取字幕并建立向量索引，前端提供对视频内容的 RAG 问答。",
-      "passes": false,
+      "passes": true,
       "e2e_test": "1) 输入 YouTube URL: https://www.youtube.com/watch?v=aircAruvnKk（3Blue1Brown神经网络视频，有英文字幕），点击 Index，等待完成；2) 输入问题 'What is this video about?'，发送后等待回答；3) 截图确认回答包含 neural network 或 learning 相关内容",
       "backend_steps": [
         "安装依赖：pip install youtube-transcript-api",
