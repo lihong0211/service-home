@@ -110,6 +110,29 @@ from service.ai.mixture_agents import list_models_api, mixture_chat_api
 from service.ai.resume_matcher import resume_match_api
 from service.ai.news_agent import fetch_articles_api, news_summary_api
 from service.ai.web_scraper import web_scrape_extract_api
+# starter_agents
+from service.ai.starter_agents.travel_agent import travel_plan_api
+from service.ai.starter_agents.recipe_agent import recipe_plan_api
+from service.ai.starter_agents.health_fitness_agent import health_plan_api
+from service.ai.starter_agents.reasoning_agent import reasoning_chat_api
+from service.ai.starter_agents.finance_coach import finance_plan_api
+from service.ai.starter_agents.mental_wellbeing import wellbeing_chat_api
+from service.ai.starter_agents.startup_trend import startup_analyze_api
+# advanced_agents
+from service.ai.advanced_agents.speech_trainer import speech_analyze_api
+from service.ai.advanced_agents.negotiation_simulator import negotiation_chat_api, list_scenarios_api
+from service.ai.advanced_agents.chess_game import chess_new_api, chess_move_api
+# chat_with_x
+from service.ai.chat_with_x.pdf_chat import pdf_index_api, pdf_ask_api
+from service.ai.chat_with_x.arxiv_chat import arxiv_index_api, arxiv_ask_api
+from service.ai.chat_with_x.gmail_chat import (
+    gmail_auth_api, gmail_callback_api, gmail_list_api, gmail_summarize_api, gmail_reply_draft_api,
+)
+# llm_apps
+from service.ai.llm_apps.blog_podcast import blog_script_api, blog_to_podcast_api
+from service.ai.llm_apps.data_viz import data_viz_columns_api, data_viz_api
+from service.ai.llm_apps.tarot_chat import tarot_read_api
+from service.ai.llm_apps.music_gen_agent import music_generate_api, music_status_api
 
 
 async def _dispatch_ai_view(view, request: Request, **path_kwargs):
@@ -320,3 +343,35 @@ def register_ai(router: APIRouter):
     _ai_route(router, "/ai/news/articles", fetch_articles_api, ["GET"])
     _ai_route(router, "/ai/news/summary", news_summary_api, ["GET"])
     _ai_route(router, "/ai/web-scraper/extract", web_scrape_extract_api, ["POST"])
+    # starter_agents
+    _ai_route(router, "/ai/travel-agent/plan", travel_plan_api, ["POST"])
+    _ai_route(router, "/ai/recipe-agent/plan", recipe_plan_api, ["POST"])
+    _ai_route(router, "/ai/health-agent/plan", health_plan_api, ["POST"])
+    _ai_route(router, "/ai/reasoning-agent/chat", reasoning_chat_api, ["POST"])
+    _ai_route(router, "/ai/finance-coach/plan", finance_plan_api, ["POST"])
+    _ai_route(router, "/ai/wellbeing/chat", wellbeing_chat_api, ["POST"])
+    _ai_route(router, "/ai/startup-trend/analyze", startup_analyze_api, ["POST"])
+    # advanced_agents
+    _ai_route(router, "/ai/speech-trainer/analyze", speech_analyze_api, ["POST"])
+    _ai_route(router, "/ai/negotiation/chat", negotiation_chat_api, ["POST"])
+    _ai_route(router, "/ai/negotiation/scenarios", list_scenarios_api, ["GET"])
+    _ai_route(router, "/ai/chess/new", chess_new_api, ["POST"])
+    _ai_route(router, "/ai/chess/move", chess_move_api, ["POST"])
+    # chat_with_x
+    _ai_route(router, "/ai/pdf-chat/index", pdf_index_api, ["POST"])
+    _ai_route(router, "/ai/pdf-chat/ask", pdf_ask_api, ["POST"])
+    _ai_route(router, "/ai/arxiv-chat/index", arxiv_index_api, ["POST"])
+    _ai_route(router, "/ai/arxiv-chat/ask", arxiv_ask_api, ["POST"])
+    _ai_route(router, "/ai/gmail/auth", gmail_auth_api, ["GET"])
+    _ai_route(router, "/ai/gmail/callback", gmail_callback_api, ["GET"])
+    _ai_route(router, "/ai/gmail/list", gmail_list_api, ["GET"])
+    _ai_route(router, "/ai/gmail/summarize", gmail_summarize_api, ["POST"])
+    _ai_route(router, "/ai/gmail/reply-draft", gmail_reply_draft_api, ["POST"])
+    # llm_apps
+    _ai_route(router, "/ai/blog-podcast/script", blog_script_api, ["POST"])
+    _ai_route(router, "/ai/blog-podcast/audio", blog_to_podcast_api, ["POST"])
+    _ai_route(router, "/ai/data-viz/columns", data_viz_columns_api, ["POST"])
+    _ai_route(router, "/ai/data-viz/chart", data_viz_api, ["POST"])
+    _ai_route(router, "/ai/tarot/read", tarot_read_api, ["POST"])
+    _ai_route(router, "/ai/music-gen/generate", music_generate_api, ["POST"])
+    _ai_route(router, "/ai/music-gen/status", music_status_api, ["GET"])

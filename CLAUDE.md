@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Context7（最新文档）
+
+涉及第三方库/API 时，先通过 **Context7 MCP** 查最新文档再写代码（Next.js、Supabase、Prisma、Tailwind、Cloudflare Workers 等）。用 `resolve-library-id` + `query-docs`；无需用户说 "use context7"。
+
 ## Commands
 
 **Development (hot-reload):**

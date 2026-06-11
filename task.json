@@ -1,6 +1,6 @@
 {
   "project": "全栈 AI 功能扩展",
-  "description": "参考 awesome-llm-apps，为 service-home（后端）+ ai-dashboard（前端）逐功能实现 8 个新 AI 应用，每个 task 覆盖完整前后端",
+  "description": "参考 awesome-llm-apps，为 service-home（后端）+ ai-dashboard（前端）逐功能实现 AI 应用，每个 task 覆盖完整前后端",
   "repos": {
     "backend": "/Users/lihong/Desktop/personal/code/service-home",
     "frontend": "/Users/lihong/Desktop/personal/code/ai-dashboard"
@@ -9,157 +9,375 @@
     "csv": "/Users/lihong/Desktop/personal/code/service-home/test-fixtures/sample_data.csv",
     "pdf": "/Users/lihong/Desktop/personal/code/service-home/test-fixtures/sample_resume.pdf"
   },
+  "hub_page": {
+    "description": "大模型应用体验中心 - 新建 /hub 路由，展示所有 AI 应用卡片（已有8个 + 新增），按类别分组",
+    "route": "/hub",
+    "frontend_file": "src/pages/AppHub.tsx",
+    "passes": true
+  },
   "tasks": [
     {
-      "id": 1,
-      "name": "AI数据分析",
-      "description": "用户上传 CSV/Excel 文件，输入自然语言问题，后端用 pandas+DuckDB 执行数据查询，前端展示数据预览和查询结果。",
-      "passes": true,
-      "e2e_test": "已完成",
+      "id": 1, "name": "AI数据分析", "passes": true, "e2e_test": "已完成",
+      "description": "用户上传 CSV/Excel 文件，自然语言问题，pandas+DuckDB 执行数据查询"
+    },
+    {
+      "id": 2, "name": "Chat with GitHub", "passes": true, "e2e_test": "已完成",
+      "description": "GitHub 仓库 URL，下载代码文件，向量索引，RAG 问答"
+    },
+    {
+      "id": 3, "name": "Chat with YouTube", "passes": true, "e2e_test": "已完成",
+      "description": "YouTube 视频 URL，提取字幕，向量索引，RAG 问答"
+    },
+    {
+      "id": 4, "name": "对话持久记忆", "passes": true, "e2e_test": "已完成",
+      "description": "用户级持久记忆，AI 记住重要信息并在后续对话中引用"
+    },
+    {
+      "id": 5, "name": "Mixture of Agents", "passes": true, "e2e_test": "已完成",
+      "description": "同一问题并发发给多个 Ollama 模型，DashScope 聚合最优答案"
+    },
+    {
+      "id": 6, "name": "简历与职位匹配", "passes": true, "e2e_test": "已完成",
+      "description": "上传简历 PDF + 职位描述，AI 分析匹配分数和建议"
+    },
+    {
+      "id": 7, "name": "AI新闻摘要Agent", "passes": true, "e2e_test": "已完成",
+      "description": "从 RSS 源抓取科技/AI 新闻，LLM 生成中文摘要"
+    },
+    {
+      "id": 8, "name": "网页智能提取Agent", "passes": true, "e2e_test": "已完成",
+      "description": "输入 URL，AI 抓取网页正文并提取结构化信息"
+    },
+    {
+      "id": 9,
+      "name": "AI旅行规划Agent",
+      "description": "用户输入目的地、天数、偏好，AI 生成完整旅行攻略（景点/行程/预算/注意事项），参考 awesome-llm-apps/starter_ai_agents/ai_travel_agent",
+      "passes": false,
+      "needs_external_api": false,
+      "category": "对话Agent",
       "backend_steps": [
-        "安装依赖：cd service-home && pip install duckdb",
-        "创建 service/ai/data_analysis.py：upload_data_file_api(request) 接受 multipart 文件，pandas 读取 CSV/Excel，存入内存 DuckDB，返回 {session_id, columns:[{name,type}], row_count, preview:[[rows]]}；query_data_api(request) 接受 {session_id, question}，用 DashScope qwen-turbo 将自然语言转为 DuckDB SQL，执行后返回 {sql, columns, rows}",
-        "routes/ai.py 顶部添加 from service.ai.data_analysis import upload_data_file_api, query_data_api",
-        "register_ai() 末尾添加：_ai_route(router, '/ai/data-analysis/upload', upload_data_file_api, ['POST']) 和 _ai_route(router, '/ai/data-analysis/query', query_data_api, ['POST'])",
-        "测试：python -c 'from routes.ai import register_ai; print(\"OK\")' 然后 curl 测试两个 endpoint"
+        "创建 service/ai/travel_agent.py：travel_plan_api(request) 接受 {destination:str, days:int, budget?:str, preferences?:str, travel_style?:str}，构建旅行专家 system prompt，qwen-turbo 流式生成攻略（含每日行程/推荐景点/美食/预算/注意事项），StreamingResponse 返回",
+        "routes/ai.py 添加 import 和路由：_ai_route(router, '/ai/travel-agent/plan', travel_plan_api, ['POST'])",
+        "测试：curl -X POST http://localhost:3000/ai/travel-agent/plan -H 'Content-Type: application/json' -d '{\"destination\":\"京都\",\"days\":3}'"
       ],
       "frontend_steps": [
-        "创建 ai-dashboard/src/service/data-analysis.ts：uploadDataFile(file: File) 和 queryData(sessionId: string, question: string) 两个函数",
-        "创建 ai-dashboard/src/pages/DataAnalysis.tsx：上方为 Upload.Dragger（接受 .csv/.xlsx/.xls），上传后显示列信息和前10行预览（Table 组件）；下方为 Input+Button，查询后展示生成的 SQL（代码块）和结果表格",
-        "routes.tsx：import DataAnalysis，skillsRoutes 末尾（coze 之前）添加 { path: 'data-analysis', component: DataAnalysis, label: 'Data Analysis' }",
-        "MainLayout.tsx：import BarChartOutlined，children 中（Portal 之前）添加 { key: '/skills/data-analysis', icon: <BarChartOutlined />, label: 'Data Analysis' }",
-        "cd ai-dashboard && npm run build（无 TS 错误），Playwright 打开 http://localhost:5173/skills/data-analysis 截图确认"
+        "创建 src/service/travel-agent.ts：planTravel(params, onChunk) 函数",
+        "创建 src/pages/TravelPlanner.tsx：左侧表单（目的地/天数/预算/偏好风格 Select/自定义偏好 tags）；右侧 markdown 渲染流式旅行攻略，使用 react-markdown 或 pre 展示",
+        "routes.tsx 添加路由 { path: 'travel-planner', component: TravelPlanner, label: 'AI旅行规划' }",
+        "MainLayout.tsx 添加菜单 { key: '/skills/travel-planner', icon: <CompassOutlined />, label: 'AI旅行规划' }",
+        "注册到 AppHub 体验中心卡片：category='对话Agent', description='输入目的地和天数，AI生成完整旅行攻略'",
+        "npm run build 通过，截图确认"
       ]
     },
     {
-      "id": 2,
-      "name": "Chat with GitHub",
-      "description": "用户输入 GitHub 仓库 URL，后端下载代码文件并建立向量索引，前端提供聊天界面对仓库代码进行 RAG 问答。",
-      "passes": true,
-      "e2e_test": "1) 在 URL 输入框输入 https://github.com/anthropics/anthropic-quickstarts，点击 Index 按钮，等待索引完成（显示 file_count）；2) 在聊天框输入 'What is this repository about?'，发送后等待流式回答出现；3) 截图确认回答非空且包含 'quickstart' 或 'anthropic' 等相关内容",
+      "id": 10,
+      "name": "AI食谱规划Agent",
+      "description": "用户输入食材、人数、饮食偏好，AI 生成食谱+营养分析+购物清单，参考 awesome-llm-apps/advanced_ai_agents/single_agent_apps/ai_recipe_meal_planning_agent",
+      "passes": false,
+      "needs_external_api": false,
+      "category": "对话Agent",
       "backend_steps": [
-        "安装依赖：pip install PyGithub",
-        "创建 service/ai/github_chat.py：github_index_api(request) 接受 {repo_url, github_token?}，解析 owner/repo，用 PyGithub 下载代码文件（过滤 .py/.js/.ts/.md，单文件限 100KB，最多200个文件），分段后 DashScope embedding 向量化存入 Qdrant（collection=github_{owner}_{repo}），返回 {index_id, file_count}；github_ask_api(request) 接受 {index_id, question}，向量检索后 qwen-turbo 生成回答，流式 StreamingResponse 返回",
-        "routes/ai.py 添加 import 和两条路由：/ai/github-chat/index（POST）、/ai/github-chat/ask（POST）",
-        "测试：curl 用小型公开仓库测试 index，再测试 ask"
+        "创建 service/ai/recipe_agent.py：recipe_plan_api(request) 接受 {ingredients:str, servings:int, dietary?:str, cuisine?:str, meal_type?:str}，qwen-turbo 扮演营养师，流式返回食谱（食材清单/步骤/营养信息/烹饪时间）",
+        "routes/ai.py 添加路由：_ai_route(router, '/ai/recipe-agent/plan', recipe_plan_api, ['POST'])",
+        "测试：curl 用中文食材名测试"
       ],
       "frontend_steps": [
-        "创建 src/service/github-chat.ts：indexRepo(repoUrl, token?) 和 askGithub(indexId, question, onChunk) 两个函数",
-        "创建 src/pages/GitHubChat.tsx：顶部 GitHub URL 输入框+可选 Token 输入+Index 按钮；索引中 Loading；完成后显示 {file_count} 并展示聊天区（消息列表+输入框，流式回答，参考 Chat.tsx 模式）",
-        "routes.tsx 添加路由 { path: 'github-chat', ... }，MainLayout.tsx 添加菜单 { key: '/skills/github-chat', icon: <GithubOutlined />, label: 'GitHub Chat' }",
-        "npm run build 通过后，执行 e2e_test 中的步骤，用 Playwright 操作并截图"
+        "创建 src/service/recipe-agent.ts：planRecipe(params, onChunk) 函数",
+        "创建 src/pages/RecipePlanner.tsx：Input 食材（逗号分隔 tag 输入）；Select 人数/饮食类型（素食/纯素/低碳/普通）/菜系；结果区 markdown 渲染",
+        "routes.tsx + MainLayout.tsx 注册路由和菜单（icon: ForkOutlined）",
+        "注册到 AppHub，npm run build 通过，截图"
       ]
     },
     {
-      "id": 3,
-      "name": "Chat with YouTube",
-      "description": "用户输入 YouTube 视频 URL，后端提取字幕并建立向量索引，前端提供对视频内容的 RAG 问答。",
-      "passes": true,
-      "e2e_test": "1) 输入 YouTube URL: https://www.youtube.com/watch?v=aircAruvnKk（3Blue1Brown神经网络视频，有英文字幕），点击 Index，等待完成；2) 输入问题 'What is this video about?'，发送后等待回答；3) 截图确认回答包含 neural network 或 learning 相关内容",
+      "id": 11,
+      "name": "AI健康健身顾问",
+      "description": "用户输入年龄/体重/身高/健身目标，AI 生成个性化健身计划和饮食方案，参考 awesome-llm-apps/advanced_ai_agents/single_agent_apps/ai_health_fitness_agent",
+      "passes": false,
+      "needs_external_api": false,
+      "category": "对话Agent",
       "backend_steps": [
-        "安装依赖：pip install youtube-transcript-api",
-        "创建 service/ai/youtube_chat.py：youtube_index_api(request) 接受 {video_url}，提取 video_id，用 youtube-transcript-api 获取字幕（优先 zh-Hans/zh/en），按 1000 字分段，DashScope embedding 向量化存入 Qdrant（collection=youtube_{video_id}），返回 {index_id, video_id, segment_count, language}；youtube_ask_api(request) 接受 {index_id, question}，RAG 检索后流式返回答案",
-        "routes/ai.py 添加 import 和两条路由：/ai/youtube-chat/index（POST）、/ai/youtube-chat/ask（POST）",
-        "测试：用有字幕的 YouTube 视频 URL 测试"
+        "创建 service/ai/health_fitness_agent.py：health_plan_api(request) 接受 {age:int, weight:float, height:float, goal:str, activity_level:str, health_issues?:str}，qwen-turbo 扮演健身教练+营养师，流式返回计划（训练计划/饮食建议/注意事项）",
+        "routes/ai.py 添加路由：_ai_route(router, '/ai/health-agent/plan', health_plan_api, ['POST'])",
+        "测试：curl 测试基本参数"
       ],
       "frontend_steps": [
-        "创建 src/service/youtube-chat.ts：indexVideo(videoUrl) 和 askYoutube(indexId, question, onChunk) 两个函数",
-        "创建 src/pages/YouTubeChat.tsx：顶部 YouTube URL 输入+Index 按钮；完成后显示视频信息（video_id/字幕段数/语言）；聊天区支持流式回答",
-        "routes.tsx 添加路由 { path: 'youtube-chat', ... }，MainLayout.tsx 添加菜单（icon: <VideoCameraOutlined />）",
-        "npm run build 通过后，执行 e2e_test 中的步骤，用 Playwright 操作并截图"
+        "创建 src/service/health-agent.ts：generateHealthPlan(params, onChunk) 函数",
+        "创建 src/pages/HealthFitnessAdvisor.tsx：表单输入身体数据（InputNumber）+ 目标 Select（减脂/增肌/塑形/保持）+ 活动水平 Radio；结果区流式 markdown",
+        "routes.tsx + MainLayout.tsx 注册（icon: HeartOutlined）",
+        "注册到 AppHub，npm run build 通过，截图"
       ]
     },
     {
-      "id": 4,
-      "name": "对话持久记忆",
-      "description": "对话系统增加用户级持久记忆，AI 记住用户重要信息并在后续对话中自动引用，前端展示聊天界面和记忆面板。",
-      "passes": true,
-      "e2e_test": "1) 在用户ID框输入 e2e_test_user，发送消息 '我叫张伟，我是一名 Python 工程师，我喜欢 LLM 开发'，等待回复；2) 右侧记忆面板应出现新记忆条目，截图；3) 再发送消息 '你还记得我的名字吗？'，确认回复中包含 '张伟' 或 'Python'",
+      "id": 12,
+      "name": "AI推理思考Agent",
+      "description": "使用本地 deepseek-r1:1.5b 的 <think> 标签展示推理过程，类似 AI Reasoning Agent，参考 awesome-llm-apps/starter_ai_agents/ai_reasoning_agent",
+      "passes": false,
+      "needs_external_api": false,
+      "category": "推理模型",
       "backend_steps": [
-        "创建 model/ai/chat_memory.py：ORM 模型，字段 id/user_id(String 64, index)/content(Text)/memory_type(String 20)/created_at，继承 BaseModel",
-        "创建 service/ai/memory_chat.py：memory_chat_api(request) 接受 {user_id, message}，读取该 user 的长期记忆（最近20条）拼入 system prompt，调用 Ollama 对话（流式），对话后用 qwen-turbo 从本轮对话提取重要信息写入 DB；list_memories_api(request) 接受 query param user_id 返回记忆列表；clear_memories_api(request) 接受 {user_id} 删除所有记忆",
-        "routes/ai.py 添加 import 和三条路由：/ai/memory-chat/chat（POST）、/ai/memory-chat/memories（GET）、/ai/memory-chat/memories（DELETE）",
-        "测试：多轮对话后 curl GET memories 验证记忆已持久化"
+        "创建 service/ai/reasoning_agent.py：reasoning_chat_api(request) 接受 {question:str, model?:str}，调用 Ollama (deepseek-r1:1.5b) 流式，解析 <think>...</think> 标签，以 SSE 发送两种 chunk：{type:'think',content:str} 和 {type:'answer',content:str}",
+        "routes/ai.py 添加路由：_ai_route(router, '/ai/reasoning-agent/chat', reasoning_chat_api, ['POST'])",
+        "测试：curl 用数学题或逻辑题测试"
       ],
       "frontend_steps": [
-        "创建 src/service/memory-chat.ts：memoryChatStream(userId, message, onChunk)、getMemories(userId)、clearMemories(userId) 三个函数",
-        "创建 src/pages/MemoryChat.tsx：顶部用户 ID 输入框（默认 'user_001'）；主体左右布局：左侧(70%)聊天区（流式）；右侧(30%)记忆面板（记忆列表+清除按钮，每次发消息后自动刷新）",
-        "routes.tsx 添加路由 { path: 'memory-chat', ... }，MainLayout.tsx 添加菜单（icon: <ThunderboltOutlined />）",
-        "npm run build 通过后，执行 e2e_test 中的步骤，用 Playwright 操作并截图"
+        "创建 src/service/reasoning-agent.ts：reasoningChat(question, onThink, onAnswer) 函数，解析两种 chunk type",
+        "创建 src/pages/ReasoningAgent.tsx：问题输入框；结果区分两部分：左/上灰色折叠 <思考过程>（实时展开动画）+ 右/下主答案区域（蓝色高亮）",
+        "routes.tsx + MainLayout.tsx 注册（icon: BulbOutlined）",
+        "注册到 AppHub，npm run build 通过，截图"
       ]
     },
     {
-      "id": 5,
-      "name": "Mixture of Agents",
-      "description": "同一问题并发发给多个本地 Ollama 模型，各自独立回答，再由 DashScope qwen-turbo 聚合最优答案，前端并排展示各模型回答和聚合结果。",
-      "passes": true,
-      "e2e_test": "1) 页面加载后，模型选择区应显示可用模型列表，勾选至少2个；2) 输入问题 '用一句话解释什么是 RAG'，点击发送；3) 等待各模型回答卡片出现，截图确认显示多个模型名称和各自回答；4) 确认底部聚合结果区出现综合回答",
+      "id": 13,
+      "name": "AI演讲训练Agent",
+      "description": "用户上传音频/录音，faster-whisper 转文字，AI 分析演讲内容、语速、用词并给出改进建议，参考 awesome-llm-apps/advanced_ai_agents/multi_agent_apps/ai_speech_trainer_agent",
+      "passes": false,
+      "needs_external_api": false,
+      "category": "多媒体处理",
       "backend_steps": [
-        "创建 service/ai/mixture_agents.py：list_models_api(request) 调用 Ollama GET http://localhost:11434/api/tags 返回模型列表；mixture_chat_api(request) 接受 {question, models:[...]}，asyncio.gather 并发调用各 Ollama 模型，收集回答后用 DashScope qwen-turbo 综合，流式返回最终答案（同时在首个 chunk 里附带各模型原始回答供前端展示）",
-        "routes/ai.py 添加 import 和两条路由：/ai/mixture-agents/models（GET）、/ai/mixture-agents/chat（POST）",
-        "测试：curl models 确认有模型可用，curl chat 验证多模型并发和聚合"
+        "创建 service/ai/speech_trainer.py：speech_analyze_api(request) 接受 multipart 音频文件（mp3/wav/m4a/webm），调用 faster-whisper 转录文字（已有 service/ai/stt.py 可参考），qwen-turbo 分析演讲文本：语速估算（字数/时长）/逻辑结构/用词/开场结尾/改进建议，返回 {transcript:str, word_count:int, duration:float, analysis:{structure_score,language_score,suggestions:[str],strengths:[str],overall_feedback:str}}",
+        "routes/ai.py 添加路由：_ai_route(router, '/ai/speech-trainer/analyze', speech_analyze_api, ['POST'])",
+        "测试：curl -F 'audio=@test-fixtures/test.mp3' http://localhost:3000/ai/speech-trainer/analyze"
       ],
       "frontend_steps": [
-        "创建 src/service/mixture-agents.ts：getAvailableModels() 和 mixtureChat(question, models, onChunk) 两个函数",
-        "创建 src/pages/MixtureAgents.tsx：顶部模型多选（Checkbox.Group，从 API 加载）+问题输入+发送；结果区：上方各模型回答卡片网格（每模型一卡，显示模型名+内容），下方聚合结果区（特殊高亮样式）",
-        "routes.tsx 添加路由 { path: 'mixture-agents', ... }，MainLayout.tsx 添加菜单（icon: <TeamOutlined />）",
-        "npm run build 通过后，执行 e2e_test 中的步骤，用 Playwright 操作并截图"
+        "创建 src/service/speech-trainer.ts：analyzeSpeech(audioFile: File) 函数",
+        "创建 src/pages/SpeechTrainer.tsx：Upload.Dragger 接受音频文件 + 浏览器录音按钮（MediaRecorder）；结果区：转录文本 + 分析报告（分数环形/优势 Tag/建议列表）",
+        "routes.tsx + MainLayout.tsx 注册（icon: AudioOutlined）",
+        "注册到 AppHub，npm run build 通过，截图"
       ]
     },
     {
-      "id": 6,
-      "name": "简历与职位匹配",
-      "description": "用户上传简历 PDF + 输入职位描述，AI 提取简历信息与 JD 对比，输出匹配分数和建议，前端展示分析报告。",
-      "passes": true,
-      "e2e_test": "1) 上传测试简历：/Users/lihong/Desktop/personal/code/service-home/test-fixtures/sample_resume.pdf；2) 在 JD 输入框粘贴以下内容：'We are looking for a Senior Python Engineer with 5+ years experience in FastAPI, distributed systems, and AI/ML. Must have experience with LLM APIs and vector databases.'；3) 点击分析按钮，等待结果；4) 截图确认：匹配分数为数字（0-100）、优势/差距/建议列表非空",
+      "id": 14,
+      "name": "博客转播客",
+      "description": "输入博客 URL，newspaper3k 抓取内容，qwen-turbo 生成播客脚本，edge-tts 转语音，参考 awesome-llm-apps/starter_ai_agents/ai_blog_to_podcast_agent（原版需 ElevenLabs，我们用 edge-tts）",
+      "passes": false,
+      "needs_external_api": false,
+      "category": "多媒体处理",
       "backend_steps": [
-        "创建 service/ai/resume_matcher.py：resume_match_api(request) 接受 multipart（resume_pdf 文件 + job_description 文本字段），PyPDF2 解析 PDF，DashScope qwen-turbo 分两步处理：1）提取结构化简历（教育/经历/技能），2）与 JD 对比生成分析，返回 {score:int, strengths:[str], gaps:[str], suggestions:[str], resume_summary:str}",
-        "routes/ai.py 添加 import 和一条路由：/ai/resume-match（POST）",
-        "测试：curl -F 'resume_pdf=@test-fixtures/sample_resume.pdf' -F 'job_description=Python engineer needed' http://localhost:3000/ai/resume-match"
+        "创建 service/ai/blog_podcast.py：blog_to_podcast_api(request) 接受 {url:str, voice?:str}，newspaper3k 抓取博客正文，qwen-turbo 将文章改写成 800-1200字播客脚本（口语化、有节奏感），edge-tts 生成音频，返回音频文件（StreamingResponse application/octet-stream）；blog_script_api(request) 接受 {url:str} 只返回 {title, original_summary, podcast_script}",
+        "routes/ai.py 添加路由：_ai_route(router, '/ai/blog-podcast/script', blog_script_api, ['POST']) 和 _ai_route(router, '/ai/blog-podcast/audio', blog_to_podcast_api, ['POST'])",
+        "测试：curl 用英文技术博客 URL 测试"
       ],
       "frontend_steps": [
-        "创建 src/service/resume-matcher.ts：matchResume(resumeFile: File, jobDescription: string) 函数（FormData 上传）",
-        "创建 src/pages/ResumeMatcher.tsx：上方两列：左侧 Upload.Dragger（.pdf），右侧 TextArea（职位描述）；分析按钮；结果区：匹配分数（大数字 + Progress 圆形），下方三列：优势（绿 Tag）/差距（红 Tag）/建议（有序列表）",
-        "routes.tsx 添加路由 { path: 'resume-match', ... }，MainLayout.tsx 添加菜单（icon: <FileTextOutlined />）",
-        "npm run build 通过后，执行 e2e_test 中的步骤，用 Playwright 操作并截图"
+        "创建 src/service/blog-podcast.ts：getBlogScript(url) 和 getBlogAudio(url, voice) 函数（audio 返回 Blob URL）",
+        "创建 src/pages/BlogPodcast.tsx：URL 输入框 + 声音 Select（edge-tts 中英文声音）；先获取脚本（展示原文摘要+播客脚本）；再生成音频（<audio> 控件播放）；支持下载音频",
+        "routes.tsx + MainLayout.tsx 注册（icon: PlaySquareOutlined）",
+        "注册到 AppHub，npm run build 通过，截图"
       ]
     },
     {
-      "id": 7,
-      "name": "AI新闻摘要Agent",
-      "description": "从预置 RSS 源抓取科技/AI 新闻，LLM 生成中文摘要和今日要闻总结，前端展示新闻聚合面板。",
-      "passes": true,
-      "e2e_test": "1) 页面加载时应自动请求数据，等待 loading 完成（最多30秒）；2) 截图确认：顶部今日要闻总结卡片显示非空文字，下方新闻列表至少显示3篇文章（各有标题和摘要）；3) 点击刷新按钮确认重新加载不报错",
+      "id": 15,
+      "name": "AI数据可视化Agent",
+      "description": "用户上传 CSV，自然语言描述想要的图表，AI 生成 Python matplotlib 代码并执行，返回图表图片，参考 awesome-llm-apps/starter_ai_agents/ai_data_visualisation_agent",
+      "passes": false,
+      "needs_external_api": false,
+      "category": "数据分析",
       "backend_steps": [
-        "安装依赖：pip install feedparser",
-        "创建 service/ai/news_agent.py：预置 RSS_SOURCES（MIT Tech Review / Hacker News / The Verge / 36kr AI 等5-8个）；fetch_articles_api(request) 并发抓取（feedparser），取近24小时文章（最多30篇），qwen-turbo 为每篇生成50字中文摘要，返回 {articles:[{title,url,source,published_at,summary}]}；news_summary_api(request) 将所有文章汇总，qwen-turbo 生成200字今日要闻总结，返回 {summary:str, article_count:int, generated_at:str}",
-        "routes/ai.py 添加 import 和两条路由：/ai/news/articles（GET）、/ai/news/summary（GET）",
-        "测试：curl 两个 endpoint 验证返回结构"
+        "创建 service/ai/data_viz.py：data_viz_api(request) 接受 multipart（csv 文件 + question:str），pandas 读取 CSV，qwen-turbo 根据数据结构+问题生成 matplotlib 代码，在沙箱环境执行（exec），将图表保存为 PNG base64 返回；data_viz_columns_api(request) 接受 multipart CSV 返回列名列表",
+        "routes/ai.py 添加路由：_ai_route(router, '/ai/data-viz/columns', data_viz_columns_api, ['POST']) 和 _ai_route(router, '/ai/data-viz/chart', data_viz_api, ['POST'])",
+        "测试：curl 上传 sample_data.csv 并描述'画柱状图'"
       ],
       "frontend_steps": [
-        "创建 src/service/news-agent.ts：fetchNewsArticles() 和 getNewsSummary() 两个函数",
-        "创建 src/pages/NewsAgent.tsx：页面加载时自动请求数据；顶部今日要闻总结卡片（蓝色背景，含文章数+右上角刷新按钮）；主体新闻卡片网格（2-3列，每卡显示来源徽章/标题可点击/AI摘要/发布时间）",
-        "routes.tsx 添加路由 { path: 'news-agent', ... }，MainLayout.tsx 添加菜单（icon: <GlobalOutlined />）",
-        "npm run build 通过后，执行 e2e_test 中的步骤，用 Playwright 操作并截图"
+        "创建 src/service/data-viz.ts：getColumns(file) 和 generateChart(file, question) 函数（chart 返回 base64 图片）",
+        "创建 src/pages/DataVisualization.tsx：Upload 区（CSV）+ 列名展示 Tag + 自然语言描述 TextArea + 生成按钮；结果区展示 <img src={base64} /> 图表",
+        "routes.tsx + MainLayout.tsx 注册（icon: LineChartOutlined）",
+        "注册到 AppHub，npm run build 通过，截图"
       ]
     },
     {
-      "id": 8,
-      "name": "网页智能提取Agent",
-      "description": "用户输入 URL，AI 抓取网页正文并提取结构化信息，支持自定义提取字段，前端展示提取结果。",
-      "passes": true,
-      "e2e_test": "1) 在 URL 输入框输入 https://www.anthropic.com，点击提取按钮，等待结果；2) 截图确认结果区显示 title 非空、word_count 大于0、extracted 字段有内容；3) 展开自定义 Schema，添加字段 'main_product'='公司主要产品名称'，再次提取，确认结果包含该字段",
+      "id": 16,
+      "name": "Chat with PDF",
+      "description": "用户上传任意 PDF，建立向量索引后进行 RAG 问答，参考 awesome-llm-apps/advanced_llm_apps/chat_with_X_tutorials/chat_with_pdf",
+      "passes": false,
+      "needs_external_api": false,
+      "category": "知识处理",
       "backend_steps": [
-        "安装依赖：pip install newspaper3k lxml_html_clean",
-        "创建 service/ai/web_scraper.py：web_scrape_extract_api(request) 接受 {url:str, schema?:{field:description}}，newspaper3k Article 抓取并解析网页（download + parse），若无 schema 则默认提取标题/摘要/关键词/正文摘要，若有 schema 则将网页内容和 schema 发给 qwen-turbo 按字段提取，返回 {url, title, extracted:{...}, word_count:int}",
-        "routes/ai.py 添加 import 和一条路由：/ai/web-scraper/extract（POST）",
-        "测试：curl -X POST http://localhost:3000/ai/web-scraper/extract -H 'Content-Type: application/json' -d '{\"url\":\"https://www.anthropic.com\"}'"
+        "创建 service/ai/pdf_chat.py：pdf_index_api(request) 接受 multipart PDF，PyPDF2 提取文字，按 800 字分段，DashScope embedding，存入 Qdrant（collection=pdf_{md5_hash}），返回 {index_id, page_count, chunk_count}；pdf_ask_api(request) 接受 {index_id, question}，RAG 检索后流式返回",
+        "routes/ai.py 添加路由：_ai_route(router, '/ai/pdf-chat/index', pdf_index_api, ['POST']) 和 _ai_route(router, '/ai/pdf-chat/ask', pdf_ask_api, ['POST'])",
+        "测试：curl 上传 sample_resume.pdf 测试"
       ],
       "frontend_steps": [
-        "创建 src/service/web-scraper.ts：extractWebContent(url: string, schema?: Record<string, string>) 函数",
-        "创建 src/pages/WebScraper.tsx：URL 输入框；可折叠的自定义 Schema 区（Form.List，key-value 键值对）；提取按钮；结果区：标题+字数统计，下方 <pre> 展示 JSON 提取结果",
-        "routes.tsx 添加路由 { path: 'web-scraper', ... }，MainLayout.tsx 添加菜单（icon: <SearchOutlined />）",
-        "npm run build 通过后，执行 e2e_test 中的步骤，用 Playwright 操作并截图"
+        "创建 src/service/pdf-chat.ts：indexPDF(file) 和 askPDF(indexId, question, onChunk) 函数",
+        "创建 src/pages/PDFChat.tsx：Upload.Dragger 接受 PDF + 索引进度；完成后聊天界面（类似 YouTubeChat 布局），流式回答",
+        "routes.tsx + MainLayout.tsx 注册（icon: FilePdfOutlined）",
+        "注册到 AppHub，npm run build 通过，截图"
+      ]
+    },
+    {
+      "id": 17,
+      "name": "AI财务教练",
+      "description": "用户输入收入/支出/储蓄目标，AI 生成个性化财务规划和建议，参考 awesome-llm-apps/advanced_ai_agents/single_agent_apps/ai_personal_finance_agent",
+      "passes": false,
+      "needs_external_api": false,
+      "category": "对话Agent",
+      "backend_steps": [
+        "创建 service/ai/finance_coach.py：finance_plan_api(request) 接受 {monthly_income:float, monthly_expenses:float, savings_goal:float, debt?:float, investment_risk?:str, financial_goals:str}，qwen-turbo 扮演专业财务顾问，流式返回：支出分析/储蓄建议/投资组合/债务管理/3/5/10年规划",
+        "routes/ai.py 添加路由：_ai_route(router, '/ai/finance-coach/plan', finance_plan_api, ['POST'])",
+        "测试：curl 用示例数据测试"
+      ],
+      "frontend_steps": [
+        "创建 src/service/finance-coach.ts：generateFinancePlan(params, onChunk) 函数",
+        "创建 src/pages/FinanceCoach.tsx：InputNumber 表单（月收入/月支出/储蓄目标/负债/投资风险 Select）+ 财务目标 TextArea；右侧流式 markdown 规划",
+        "routes.tsx + MainLayout.tsx 注册（icon: DollarOutlined）",
+        "注册到 AppHub，npm run build 通过，截图"
+      ]
+    },
+    {
+      "id": 18,
+      "name": "AI心理健康助手",
+      "description": "支持性对话 AI，帮助用户疏导情绪和压力，带免责声明，参考 awesome-llm-apps/advanced_ai_agents/multi_agent_apps/ai_mental_wellbeing_agent",
+      "passes": false,
+      "needs_external_api": false,
+      "category": "对话Agent",
+      "backend_steps": [
+        "创建 service/ai/mental_wellbeing.py：wellbeing_chat_api(request) 接受 {message:str, session_id?:str, mood?:str}，qwen-turbo system prompt：专业心理咨询师，温暖共情，非诊断建议，必要时引导专业帮助，流式返回",
+        "routes/ai.py 添加路由：_ai_route(router, '/ai/wellbeing/chat', wellbeing_chat_api, ['POST'])",
+        "测试：curl 用情绪相关对话测试"
+      ],
+      "frontend_steps": [
+        "创建 src/service/mental-wellbeing.ts：wellbeingChat(message, sessionId, mood, onChunk) 函数",
+        "创建 src/pages/MentalWellbeing.tsx：顶部心情选择（😊😐😔😰 emoji 按钮）+ 免责声明 Alert；聊天界面（温暖配色，圆角对话泡）；底部提示'此服务不替代专业医疗建议'",
+        "routes.tsx + MainLayout.tsx 注册（icon: SmileOutlined）",
+        "注册到 AppHub，npm run build 通过，截图"
+      ]
+    },
+    {
+      "id": 19,
+      "name": "AI象棋对弈",
+      "description": "用户与 AI 下棋，python-chess 管理棋盘状态，qwen-turbo/ollama 决策走法，参考 awesome-llm-apps/advanced_ai_agents/autonomous_game_playing_agent_apps/ai_chess_agent",
+      "passes": false,
+      "needs_external_api": false,
+      "category": "游戏娱乐",
+      "backend_steps": [
+        "pip install python-chess",
+        "创建 service/ai/chess_game.py：chess_new_api(request) 创建新游戏返回 {game_id, fen, board_svg}；chess_move_api(request) 接受 {game_id, move:str(UCI格式)}，验证移动合法性，应用后让 AI（qwen-turbo，给出当前 FEN 让其选最佳走法）走棋，返回 {fen, ai_move, board_svg, game_over, winner}",
+        "游戏状态存内存 dict（game_id → chess.Board），board_svg 用 chess.svg.board() 返回 SVG 字符串",
+        "routes/ai.py 添加路由：_ai_route(router, '/ai/chess/new', chess_new_api, ['POST']) 和 _ai_route(router, '/ai/chess/move', chess_move_api, ['POST'])",
+        "测试：curl 创建新游戏，走一步 e2e4"
+      ],
+      "frontend_steps": [
+        "创建 src/service/chess-game.ts：newChessGame() 和 makeMove(gameId, move) 函数",
+        "创建 src/pages/ChessGame.tsx：左侧展示 SVG 棋盘（dangerouslySetInnerHTML）；右侧走法输入框（UCI: e2e4 格式）+ 历史走法列表 + 游戏状态；新游戏按钮",
+        "routes.tsx + MainLayout.tsx 注册（icon: AppstoreOutlined）",
+        "注册到 AppHub，npm run build 通过，截图"
+      ]
+    },
+    {
+      "id": 20,
+      "name": "AI谈判模拟器",
+      "description": "用户扮演买家，AI 扮演卖家（或反之），模拟商业谈判对话，参考 awesome-llm-apps/advanced_ai_agents/multi_agent_apps/ai_negotiation_battle_simulator",
+      "passes": false,
+      "needs_external_api": false,
+      "category": "游戏娱乐",
+      "backend_steps": [
+        "创建 service/ai/negotiation_simulator.py：negotiation_chat_api(request) 接受 {message:str, session_id:str, scenario:str, user_role:str, ai_role:str}，qwen-turbo 扮演 ai_role 角色，根据谈判场景和对话历史流式回复，语气根据情况变化（强硬/妥协/坚持）",
+        "routes/ai.py 添加路由：_ai_route(router, '/ai/negotiation/chat', negotiation_chat_api, ['POST'])",
+        "测试：curl 用'买车'场景测试"
+      ],
+      "frontend_steps": [
+        "创建 src/service/negotiation-simulator.ts：negotiationChat(params, onChunk) 函数",
+        "创建 src/pages/NegotiationSimulator.tsx：设置区（场景选择：买车/工资谈判/商业合同/房租；用户角色/AI角色 Select）；聊天界面（两侧对话气泡，用户一侧/AI一侧）；底部出价建议按钮",
+        "routes.tsx + MainLayout.tsx 注册（icon: SwapOutlined）",
+        "注册到 AppHub，npm run build 通过，截图"
+      ]
+    },
+    {
+      "id": 21,
+      "name": "塔罗牌解读",
+      "description": "AI 扮演塔罗牌读者，用户提问，AI 从塔罗卡牌中汲取象征意义给出解读，参考 awesome-llm-apps/advanced_llm_apps/chat-with-tarots",
+      "passes": false,
+      "needs_external_api": false,
+      "category": "娱乐体验",
+      "backend_steps": [
+        "创建 service/ai/tarot_chat.py：tarot_read_api(request) 接受 {question:str, spread_type?:str}，内置78张塔罗牌数据（大阿卡纳+小阿卡纳名称和含义），随机抽 1/3/5 张牌，qwen-turbo 根据牌面象征和问题给出解读，流式返回（包含抽到的牌名）",
+        "routes/ai.py 添加路由：_ai_route(router, '/ai/tarot/read', tarot_read_api, ['POST'])",
+        "测试：curl 用问题测试"
+      ],
+      "frontend_steps": [
+        "创建 src/service/tarot.ts：tarotRead(question, spreadType, onChunk) 函数",
+        "创建 src/pages/TarotReading.tsx：神秘主题（深色背景/金色文字）；问题输入；牌阵类型 Select（单张/三张/凯尔特）；结果区展示抽到的牌名（emoji 卡片）+ 流式解读文字",
+        "routes.tsx + MainLayout.tsx 注册（icon: StarOutlined）",
+        "注册到 AppHub，npm run build 通过，截图"
+      ]
+    },
+    {
+      "id": 22,
+      "name": "Chat with Research Papers",
+      "description": "用户输入 ArXiv 论文 ID 或 URL，下载 PDF，建立向量索引，RAG 问答，参考 awesome-llm-apps/advanced_llm_apps/chat_with_X_tutorials/chat_with_research_papers",
+      "passes": false,
+      "needs_external_api": false,
+      "category": "知识处理",
+      "backend_steps": [
+        "创建 service/ai/arxiv_chat.py：arxiv_index_api(request) 接受 {arxiv_id:str}（如 2501.12345 或 https://arxiv.org/abs/2501.12345），requests 下载 PDF，PyPDF2 解析，分段 embedding 存 Qdrant（collection=arxiv_{arxiv_id}），返回 {index_id, title, abstract, page_count}；arxiv_ask_api(request) 接受 {index_id, question}，RAG 流式回答",
+        "routes/ai.py 添加路由：_ai_route(router, '/ai/arxiv-chat/index', arxiv_index_api, ['POST']) 和 _ai_route(router, '/ai/arxiv-chat/ask', arxiv_ask_api, ['POST'])",
+        "测试：curl 用 ArXiv ID '1706.03762'（Attention is All You Need）测试"
+      ],
+      "frontend_steps": [
+        "创建 src/service/arxiv-chat.ts：indexArxiv(arxivId) 和 askArxiv(indexId, question, onChunk) 函数",
+        "创建 src/pages/ArxivChat.tsx：ArXiv ID 输入框（支持完整 URL 或纯 ID）+ Index 按钮；索引后显示论文标题和摘要；下方聊天界面，流式回答",
+        "routes.tsx + MainLayout.tsx 注册（icon: ReadOutlined）",
+        "注册到 AppHub，npm run build 通过，截图"
+      ]
+    },
+    {
+      "id": 23,
+      "name": "AI创业趋势分析",
+      "description": "用户输入创业想法或行业，AI 分析市场趋势、竞争格局、机会和风险，参考 awesome-llm-apps/starter_ai_agents/ai_startup_trend_analysis_agent",
+      "passes": false,
+      "needs_external_api": false,
+      "category": "对话Agent",
+      "backend_steps": [
+        "创建 service/ai/startup_trend.py：startup_analyze_api(request) 接受 {idea:str, industry?:str, target_market?:str}，qwen-turbo 扮演创业分析师，分析：市场规模/竞争格局/技术趋势/切入点建议/潜在风险/建议下一步，流式返回完整分析报告",
+        "routes/ai.py 添加路由：_ai_route(router, '/ai/startup-trend/analyze', startup_analyze_api, ['POST'])",
+        "测试：curl 用'AI写作工具'作为 idea 测试"
+      ],
+      "frontend_steps": [
+        "创建 src/service/startup-trend.ts：analyzeStartup(params, onChunk) 函数",
+        "创建 src/pages/StartupTrend.tsx：TextArea 输入创业想法；Select 行业分类；目标市场输入；生成按钮；右侧流式 markdown 分析报告（含评分雷达图可选）",
+        "routes.tsx + MainLayout.tsx 注册（icon: RocketOutlined）",
+        "注册到 AppHub，npm run build 通过，截图"
+      ]
+    },
+    {
+      "id": 24,
+      "name": "Gmail智能助手",
+      "description": "连接 Gmail，AI 读取邮件并进行智能回复起草/摘要/分类，参考 awesome-llm-apps/advanced_llm_apps/chat_with_X_tutorials/chat_with_gmail",
+      "passes": false,
+      "needs_external_api": true,
+      "needs_account": ["Google Cloud OAuth 2.0 凭证（client_id/client_secret）", "Gmail API 权限"],
+      "category": "知识处理",
+      "api_docs": "service/ai/gmail_chat.py 中需要 GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET 环境变量，使用 google-auth-oauthlib 完成 OAuth 流程，google-api-python-client 访问 Gmail API",
+      "backend_steps": [
+        "pip install google-auth-oauthlib google-api-python-client",
+        "创建 service/ai/gmail_chat.py：gmail_auth_api(request) 返回 OAuth 授权 URL；gmail_callback_api(request) 处理回调获取 access_token；gmail_list_api(request) 列出最近邮件；gmail_summarize_api(request) 接受 {message_id} 用 qwen-turbo 生成摘要；gmail_reply_api(request) 接受 {message_id, intent} 生成回复草稿",
+        "routes/ai.py 添加路由（5条）",
+        "不测试，记录到 docs/service_ai/gmail_setup.md"
+      ],
+      "frontend_steps": [
+        "创建 src/service/gmail-assistant.ts 和 src/pages/GmailAssistant.tsx",
+        "页面：OAuth 授权按钮 → 邮件列表 → 点击展开摘要 → 生成回复",
+        "routes.tsx + MainLayout.tsx 注册（icon: MailOutlined）",
+        "注册到 AppHub（标注'需要 Google OAuth'），npm run build 通过，截图"
+      ]
+    },
+    {
+      "id": 25,
+      "name": "AI音乐生成Agent",
+      "description": "用户描述想要的音乐风格/情绪，AI 生成音乐，参考 awesome-llm-apps/starter_ai_agents/ai_music_generator_agent",
+      "passes": false,
+      "needs_external_api": true,
+      "needs_account": ["Suno API Key 或 Udio API Key（音乐生成服务）"],
+      "category": "多媒体处理",
+      "api_docs": "service/ai/music_gen_agent.py 中需要 SUNO_API_KEY 环境变量，调用 Suno API 生成音乐",
+      "backend_steps": [
+        "创建 service/ai/music_gen_agent.py：music_generate_api(request) 接受 {prompt:str, style?:str, duration?:int}，调用 Suno/Udio API，轮询任务状态，返回 {task_id, audio_url, title}；music_status_api(request) 接受 {task_id} 查询生成状态",
+        "routes/ai.py 添加路由",
+        "不测试，记录到 docs/service_ai/music_gen_setup.md"
+      ],
+      "frontend_steps": [
+        "创建 src/service/music-gen.ts 和 src/pages/MusicGenerator.tsx",
+        "TextArea 描述音乐 + 风格 Select（古典/爵士/电子/流行）+ 生成按钮；轮询状态；audio 播放控件",
+        "routes.tsx + MainLayout.tsx 注册（icon: CustomerServiceOutlined）",
+        "注册到 AppHub（标注'需要 Suno API'），npm run build 通过"
       ]
     }
   ]
