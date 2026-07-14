@@ -2,7 +2,8 @@ import json
 import random
 from fastapi import Request
 from fastapi.responses import StreamingResponse
-from dashscope import Generation
+
+from service.ai._dashscope_common import call_generation_with_retry
 
 MAJOR_ARCANA = [
     ("愚者 (The Fool)", "新开始、自由、冒险、天真"),
@@ -86,7 +87,7 @@ async def tarot_read_api(request: Request):
     def generate():
         yield f"data: {json.dumps({'type': 'cards', 'cards': cards_response}, ensure_ascii=False)}\n\n"
 
-        resp = Generation.call(
+        resp = call_generation_with_retry(
             model="qwen-turbo",
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -96,6 +97,9 @@ async def tarot_read_api(request: Request):
             result_format="message",
         )
         for chunk in resp:
+            if chunk.output is None:
+                yield f"data: {json.dumps({'type': 'error', 'error': str(chunk.message)}, ensure_ascii=False)}\n\n"
+                return
             delta = chunk.output.choices[0].message.content if chunk.output.choices else ""
             if delta:
                 yield f"data: {json.dumps({'type': 'reading', 'response': delta}, ensure_ascii=False)}\n\n"

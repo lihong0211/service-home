@@ -10,8 +10,10 @@
 
 import os
 
+from config.ai import DEFAULT_CHAT_MODEL
+
 DISNEY_KNOWLEDGE_BASE_NAME = "disney_knowledge_base"
-_MODEL = "qwen-turbo"
+_MODEL = DEFAULT_CHAT_MODEL
 
 
 def _extract_question(input_data: dict) -> str:
@@ -117,13 +119,11 @@ class _DisneyRagAgent:
                 return
 
             context = "\n\n---\n\n".join(context_parts)
-            prompt = (
-                f"基于以下参考资料回答问题。若资料中无相关内容，请说明无法从资料中得出答案。\n\n"
-                f"参考资料：\n{context}\n\n"
-                f"问题：{question}\n\n"
-                f"请直接给出答案（可简要说明依据的段落）："
-            )
-            resp = client.chat.completions.create(
+            from service.ai.rag_enhance import build_rag_answer_prompt
+            prompt = build_rag_answer_prompt(question, context)
+            from service.ai._dashscope_common import call_openai_chat_with_retry
+            resp = call_openai_chat_with_retry(
+                client,
                 model=_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.3,

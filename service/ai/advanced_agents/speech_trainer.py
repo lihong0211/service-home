@@ -5,7 +5,8 @@ import tempfile
 import os
 from fastapi import Request, UploadFile, File, Form
 from fastapi.responses import JSONResponse
-from dashscope import Generation
+
+from service.ai._dashscope_common import call_dashscope_text
 
 
 async def speech_analyze_api(request: Request):
@@ -63,12 +64,7 @@ async def speech_analyze_api(request: Request):
 只输出 JSON，不要其他内容。"""
 
     try:
-        resp = Generation.call(
-            model="qwen-turbo",
-            messages=[{"role": "user", "content": analysis_prompt}],
-            result_format="message",
-        )
-        raw = resp.output.choices[0].message.content.strip()
+        raw = call_dashscope_text(analysis_prompt)
         if raw.startswith("```"):
             raw = raw.split("```")[1]
             if raw.startswith("json"):

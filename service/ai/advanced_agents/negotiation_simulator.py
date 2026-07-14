@@ -1,7 +1,8 @@
 import json
 from fastapi import Request
 from fastapi.responses import StreamingResponse
-from dashscope import Generation
+
+from service.ai._dashscope_common import call_generation_with_retry
 
 SCENARIOS = {
     "car": {
@@ -69,13 +70,16 @@ async def negotiation_chat_api(request: Request):
     messages.append({"role": "user", "content": message})
 
     def generate():
-        resp = Generation.call(
+        resp = call_generation_with_retry(
             model="qwen-turbo",
             messages=messages,
             stream=True,
             result_format="message",
         )
         for chunk in resp:
+            if chunk.output is None:
+                yield f"data: {json.dumps({'error': str(chunk.message)}, ensure_ascii=False)}\n\n"
+                return
             delta = chunk.output.choices[0].message.content if chunk.output.choices else ""
             if delta:
                 yield f"data: {json.dumps({'response': delta, 'ai_role': ai_role_name}, ensure_ascii=False)}\n\n"

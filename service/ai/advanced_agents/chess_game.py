@@ -1,7 +1,7 @@
-import json
 import uuid
 from fastapi import Request
-from dashscope import Generation
+
+from service.ai._dashscope_common import call_dashscope_text
 
 # In-memory game store
 _games: dict = {}
@@ -75,12 +75,7 @@ async def chess_move_api(request: Request):
 
     ai_move_uci = None
     try:
-        resp = Generation.call(
-            model="qwen-turbo",
-            messages=[{"role": "user", "content": prompt}],
-            result_format="message",
-        )
-        raw = resp.output.choices[0].message.content.strip().split()[0]
+        raw = call_dashscope_text(prompt).split()[0]
         ai_move = chess.Move.from_uci(raw)
         if ai_move in board.legal_moves:
             board.push(ai_move)

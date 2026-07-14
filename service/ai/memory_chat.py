@@ -9,18 +9,15 @@ import asyncio
 
 from fastapi import Request
 from fastapi.responses import StreamingResponse
-from openai import OpenAI
 from app.database import db as _db
 from utils.http_body import read_json_optional
+from config.ai import DEFAULT_CHAT_MODEL
+from service.ai._dashscope_common import get_dashscope_client
 
-_MODEL_CHAT = os.getenv("MEMORY_CHAT_MODEL", "qwen-turbo")
-_MODEL_EXTRACT = "qwen-turbo"
+_MODEL_CHAT = os.getenv("MEMORY_CHAT_MODEL", DEFAULT_CHAT_MODEL)
+_MODEL_EXTRACT = DEFAULT_CHAT_MODEL
 
-_client = OpenAI(
-    api_key=os.getenv("DASHSCOPE_API_KEY"),
-    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-    timeout=60.0,
-)
+_client = get_dashscope_client(timeout=60.0)
 
 
 def _get_db():

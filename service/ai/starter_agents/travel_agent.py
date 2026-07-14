@@ -1,8 +1,7 @@
-import json
 from fastapi import Request
 from fastapi.responses import StreamingResponse
-from dashscope import Generation
-import dashscope
+
+from service.ai._dashscope_common import stream_dashscope_sse
 
 
 async def travel_plan_api(request: Request):
@@ -36,20 +35,6 @@ async def travel_plan_api(request: Request):
 
 请生成完整的旅行攻略。"""
 
-    def generate():
-        resp = Generation.call(
-            model="qwen-turbo",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            stream=True,
-            result_format="message",
-        )
-        for chunk in resp:
-            delta = chunk.output.choices[0].message.content if chunk.output.choices else ""
-            if delta:
-                yield f"data: {json.dumps({'response': delta}, ensure_ascii=False)}\n\n"
-        yield "data: [DONE]\n\n"
-
-    return StreamingResponse(generate(), media_type="text/event-stream")
+    return StreamingResponse(
+        stream_dashscope_sse(system_prompt, user_prompt), media_type="text/event-stream"
+    )

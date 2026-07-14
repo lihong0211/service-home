@@ -3,19 +3,16 @@
 
 from __future__ import annotations
 
-import os
 import asyncio
 from datetime import datetime, timezone, timedelta
 
 from fastapi import Request
-from openai import OpenAI
 
-_MODEL = "qwen-turbo"
-_client = OpenAI(
-    api_key=os.getenv("DASHSCOPE_API_KEY"),
-    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-    timeout=60.0,
-)
+from config.ai import DEFAULT_CHAT_MODEL
+from service.ai._dashscope_common import get_dashscope_client
+
+_MODEL = DEFAULT_CHAT_MODEL
+_client = get_dashscope_client(timeout=60.0)
 
 RSS_SOURCES = [
     {"name": "Hacker News", "url": "https://hnrss.org/frontpage"},

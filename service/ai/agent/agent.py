@@ -12,6 +12,7 @@ from __future__ import annotations
 import time
 from typing import Any, Optional
 
+import anyio.from_thread
 from fastapi import Request
 from fastapi.responses import StreamingResponse
 
@@ -429,13 +430,13 @@ def run_agent_stream_yield_events(agent_id: str, input_data: Optional[dict] = No
 # ---------------------------------------------------------------------------
 
 
-async def agent_list_api(request: Request):
+def agent_list_api(request: Request):
     """GET /ai/agent/list 返回所有可用的智能体列表（含元信息）。"""
     agents = list_agents()
     return {"code": 0, "msg": "ok", "data": agents}
 
 
-async def agent_schema_api(request: Request):
+def agent_schema_api(request: Request):
     """GET /ai/agent/schema?agent_id=research_agent 返回智能体的图结构，供前端 3D 可视化。"""
     q = query_dict(request)
     agent_id = q.get("agent_id") or "research_agent"
@@ -452,12 +453,12 @@ async def agent_schema_api(request: Request):
     return {"code": 0, "msg": "ok", "data": schema}
 
 
-async def agent_run_api(request: Request):
+def agent_run_api(request: Request):
     """
     POST /ai/agent/run 执行智能体并返回步骤与最终状态，供前端按真实执行顺序驱动 3D 动画。
     与 langchain run 对齐：支持 stream=true 时走 SSE，先发 init（graphData），再逐步 step，最后 done（含 finalState、steps、totalSteps）。
     """
-    body = (await read_json_optional(request)) or {}
+    body = anyio.from_thread.run(read_json_optional, request) or {}
     agent_id = body.get("agent_id") or "research_agent"
     input_data = body.get("input")
     stream = body.get("stream", False)

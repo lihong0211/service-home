@@ -3,18 +3,15 @@
 
 from __future__ import annotations
 
-import os
 import json
 
 from fastapi import Request
-from openai import OpenAI
 
-_MODEL = "qwen-turbo"
-_client = OpenAI(
-    api_key=os.getenv("DASHSCOPE_API_KEY"),
-    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-    timeout=120.0,
-)
+from config.ai import DEFAULT_CHAT_MODEL
+from service.ai._dashscope_common import get_dashscope_client
+
+_MODEL = DEFAULT_CHAT_MODEL
+_client = get_dashscope_client(timeout=120.0)
 
 
 def _extract_pdf_text(pdf_bytes: bytes) -> str:

@@ -5,8 +5,6 @@ Qdrant 向量库实现（替代 FAISS + 本地文件）。
 - 每个 db_name 对应一个 Qdrant collection。
 - Qdrant 的 point id 仅支持 uint64 / UUID；业务 doc_id 任意字符串 → 稳定映射为 UUID5，payload 存真实 doc_id。
 - 与 MySQL（vector_db / vector_db_document / vector_db_category）双写；rebuild / sync-from-disk 用于修复不一致。
-
-环境变量：见模块顶部注释（与 vector_db.py 的 DASHSCOPE / VECTOR_DB_DIMENSION 对齐）。
 """
 
 from __future__ import annotations
@@ -18,10 +16,11 @@ import time
 import uuid
 from typing import Any, Optional
 
-from openai import OpenAI
-
+import anyio.from_thread
 from fastapi import Request
 from utils.http_body import query_dict, read_json_optional
+from config.ai import DEFAULT_EMBEDDING_MODEL
+from service.ai._dashscope_common import get_dashscope_client
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -37,12 +36,8 @@ DIMENSION = int(os.getenv("VECTOR_DB_DIMENSION", "1024"))
 DEFAULT_USE_MMR = _env_bool("VECTOR_DB_USE_MMR_DEFAULT", True)
 DEFAULT_ENABLE_HYBRID = _env_bool("VECTOR_DB_ENABLE_HYBRID_DEFAULT", True)
 
-# 与 vector_db.py 一致：供 RAG chat 使用 DashScope OpenAI 兼容接口
-client = OpenAI(
-    api_key=os.getenv("DASHSCOPE_API_KEY"),
-    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-    timeout=30.0,
-)
+# 供 RAG chat 使用 DashScope OpenAI 兼容接口
+client = get_dashscope_client(timeout=30.0)
 
 _embedding_client = client
 
@@ -85,7 +80,7 @@ def get_embedding(text: str, max_retries: int = 3) -> list[float]:
     for attempt in range(max_retries):
         try:
             completion = _embedding_client.embeddings.create(
-                model="text-embedding-v4",
+                model=DEFAULT_EMBEDDING_MODEL,
                 input=text,
                 dimensions=DIMENSION,
                 encoding_format="float",
@@ -389,53 +384,55 @@ def search_in_db(
         return v if isinstance(v, list) else None
 
     def _mmr_select(hits: list, limit: int) -> list:
-        # cosine 相似度：score 越大越相似。MMR 需要候选向量；拿不到就退化为原排序
-        import math
+        # cosine 相似度：score 越大越相似。MMR 需要候选向量；拿不到就退化为原排序。
+        # 用 numpy 一次性算好 query-hit 相似度矩阵与 hit-hit 相似度矩阵，避免每轮候选 x 已选 的嵌套 Python 循环。
+        import numpy as np
 
-        vecs: list[Optional[list[float]]] = [_hit_vector(h) for h in hits]
-        if not any(vecs):
+        vecs_raw: list[Optional[list[float]]] = [_hit_vector(h) for h in hits]
+        if not any(vecs_raw):
             return hits[:limit]
 
-        def cos(a: list[float], b: list[float]) -> float:
-            # 避免重复归一化成本：embedding 通常已近似归一化，这里做安全归一化
-            na = math.sqrt(sum(x * x for x in a)) or 1.0
-            nb = math.sqrt(sum(x * x for x in b)) or 1.0
-            return sum(x * y for x, y in zip(a, b)) / (na * nb)
+        n = len(hits)
+        has_vec = np.array([v is not None for v in vecs_raw])
+        dim = len(next(v for v in vecs_raw if v is not None))
+        V = np.zeros((n, dim), dtype=np.float64)
+        for i, v in enumerate(vecs_raw):
+            if v is not None:
+                V[i] = v
+        norms = np.linalg.norm(V, axis=1)
+        norms[norms == 0] = 1.0
+        V_norm = V / norms[:, None]
+
+        qv = np.asarray(query_vec, dtype=np.float64)
+        qv_norm = qv / (np.linalg.norm(qv) or 1.0)
+
+        fallback_scores = np.array([_hit_score(h) for h in hits], dtype=np.float64)
+        rel = np.where(has_vec, V_norm @ qv_norm, fallback_scores)
+        sim_matrix = V_norm @ V_norm.T
 
         selected: list[int] = []
-        candidates = list(range(len(hits)))
-        qv = query_vec
-
-        def rel_score(i: int) -> float:
-            v = vecs[i]
-            return _hit_score(hits[i]) if v is None else cos(qv, v)
+        candidates = list(range(n))
+        lam = float(mmr_lambda)
 
         while candidates and len(selected) < limit:
-            best_i: Optional[int] = None
-            best_score = -1e9
-            for i in candidates:
-                rel = rel_score(i)
-                if not selected:
-                    mmr = rel
-                else:
-                    max_div = -1.0
-                    vi = vecs[i]
-                    if vi is None:
-                        max_div = max(_hit_score(hits[j]) for j in selected)
-                    else:
-                        for j in selected:
-                            vj = vecs[j]
-                            if vj is None:
-                                continue
-                            max_div = max(max_div, cos(vi, vj))
-                    mmr = float(mmr_lambda) * rel - (1.0 - float(mmr_lambda)) * max_div
-                if mmr > best_score:
-                    best_score = mmr
-                    best_i = i
-            if best_i is None:
-                break
+            cand_idx = np.array(candidates)
+            has_vec_cand = has_vec[cand_idx]
+            if not selected:
+                mmr_scores = rel[cand_idx]
+            else:
+                sel_idx = np.array(selected)
+                has_vec_sel = has_vec[sel_idx]
+                sub = sim_matrix[np.ix_(cand_idx, sel_idx)].copy()
+                if not has_vec_sel.all():
+                    sub[:, ~has_vec_sel] = -np.inf
+                max_div_vec = sub.max(axis=1)
+                max_div_vec = np.where(np.isneginf(max_div_vec), -1.0, max_div_vec)
+                fallback_max = fallback_scores[sel_idx].max()
+                max_div = np.where(has_vec_cand, max_div_vec, fallback_max)
+                mmr_scores = lam * rel[cand_idx] - (1.0 - lam) * max_div
+            best_pos = int(np.argmax(mmr_scores))
+            best_i = candidates.pop(best_pos)
             selected.append(best_i)
-            candidates = [x for x in candidates if x != best_i]
         return [hits[i] for i in selected]
 
     dense_hits = _run_dense(fetch_k, with_vectors=bool(use_mmr))
@@ -1112,15 +1109,15 @@ def rebuild_vector_db_from_mysql(db_id: int | None = None, db_name: str | None =
 # ---------- HTTP ----------
 
 
-async def list_api(request: Request):
+def list_api(request: Request):
     items = list_vector_dbs_from_mysql()
     return {"code": 0, "msg": "ok", "data": {"list": items, "names": [x["name"] for x in items]}}
 
 
-async def create_api(request: Request):
+def create_api(request: Request):
     from model.ai import VectorDb
 
-    data = await read_json_optional(request) or {}
+    data = anyio.from_thread.run(read_json_optional, request) or {}
     name = (data.get("name") or data.get("db") or "").strip()
     if not name:
         raise ValueError("缺少参数 name 或 db")
@@ -1155,7 +1152,7 @@ async def create_api(request: Request):
         raise e_vec
 
 
-async def detail_api(request: Request):
+def detail_api(request: Request):
     db_id = query_dict(request).get("id")
     db_name = query_dict(request).get("name")
     with_documents = query_dict(request).get("with_documents", "0") in ("1", "true", "yes")
@@ -1172,10 +1169,10 @@ async def detail_api(request: Request):
     return {"code": 0, "msg": "ok", "data": detail}
 
 
-async def update_api(request: Request):
+def update_api(request: Request):
     from model.ai import VectorDb
 
-    data = await read_json_optional(request) or {}
+    data = anyio.from_thread.run(read_json_optional, request) or {}
     db_id = data.get("id")
     if db_id is None:
         raise ValueError("缺少参数 id")
@@ -1205,10 +1202,10 @@ async def update_api(request: Request):
     return {"code": 0, "msg": "ok", "data": {"id": db_id, "name": name, "count": out["count"]}}
 
 
-async def update_meta_api(request: Request):
+def update_meta_api(request: Request):
     from model.ai import VectorDb
 
-    data = await read_json_optional(request) or {}
+    data = anyio.from_thread.run(read_json_optional, request) or {}
     db_id = data.get("id")
     if db_id is None:
         raise ValueError("缺少参数 id")
@@ -1252,8 +1249,8 @@ async def update_meta_api(request: Request):
     }
 
 
-async def delete_api(request: Request):
-    data = await read_json_optional(request) or {}
+def delete_api(request: Request):
+    data = anyio.from_thread.run(read_json_optional, request) or {}
     db_id = data.get("id")
     if db_id is None:
         raise ValueError("缺少参数 id")
@@ -1265,8 +1262,8 @@ async def delete_api(request: Request):
     return {"code": 0, "msg": "ok", "data": {"id": db_id, "name": name}}
 
 
-async def sync_from_disk_api(request: Request):
-    data = await read_json_optional(request) or {}
+def sync_from_disk_api(request: Request):
+    data = anyio.from_thread.run(read_json_optional, request) or {}
     name = (data.get("name") or data.get("db") or "").strip()
     if not name:
         raise ValueError("缺少参数 name 或 db")
@@ -1277,8 +1274,8 @@ async def sync_from_disk_api(request: Request):
     return {"code": 0, "msg": "ok", "data": out}
 
 
-async def rebuild_api(request: Request):
-    data = await read_json_optional(request) or {}
+def rebuild_api(request: Request):
+    data = anyio.from_thread.run(read_json_optional, request) or {}
     db_id = data.get("id")
     db_name = (data.get("name") or data.get("db") or "").strip() or None
     if not db_id and not db_name:
@@ -1294,7 +1291,7 @@ async def rebuild_api(request: Request):
     return {"code": 0, "msg": "ok", "data": out}
 
 
-async def documents_api(request: Request):
+def documents_api(request: Request):
     db_id = query_dict(request).get("db_id")
     db_name = (query_dict(request).get("db_name") or "").strip() or None
     if not db_id and not db_name:
@@ -1316,8 +1313,8 @@ async def documents_api(request: Request):
     return {"code": 0, "msg": "ok", "data": out}
 
 
-async def document_add_api(request: Request):
-    data = await read_json_optional(request) or {}
+def document_add_api(request: Request):
+    data = anyio.from_thread.run(read_json_optional, request) or {}
     db_id = data.get("db_id")
     db_name = (data.get("db_name") or "").strip() or None
     text = data.get("text")
@@ -1346,8 +1343,8 @@ async def document_add_api(request: Request):
     return {"code": 0, "msg": "ok", "data": out}
 
 
-async def document_update_api(request: Request):
-    data = await read_json_optional(request) or {}
+def document_update_api(request: Request):
+    data = anyio.from_thread.run(read_json_optional, request) or {}
     db_id = data.get("db_id")
     db_name = (data.get("db_name") or "").strip() or None
     doc_id = data.get("doc_id")
@@ -1385,8 +1382,8 @@ async def document_update_api(request: Request):
     return {"code": 0, "msg": "ok", "data": out}
 
 
-async def document_delete_api(request: Request):
-    data = await read_json_optional(request) or {}
+def document_delete_api(request: Request):
+    data = anyio.from_thread.run(read_json_optional, request) or {}
     db_id = data.get("db_id")
     db_name = (data.get("db_name") or "").strip() or None
     doc_id = data.get("doc_id")
@@ -1408,7 +1405,7 @@ async def document_delete_api(request: Request):
     return {"code": 0, "msg": "ok", "data": out}
 
 
-async def categories_api(request: Request):
+def categories_api(request: Request):
     db_id = query_dict(request).get("db_id")
     db_name = (query_dict(request).get("db_name") or "").strip() or None
     if not db_id and not db_name:
@@ -1424,8 +1421,8 @@ async def categories_api(request: Request):
     return {"code": 0, "msg": "ok", "data": {"list": items}}
 
 
-async def category_add_api(request: Request):
-    data = await read_json_optional(request) or {}
+def category_add_api(request: Request):
+    data = anyio.from_thread.run(read_json_optional, request) or {}
     db_id = data.get("db_id")
     db_name = (data.get("db_name") or "").strip() or None
     name = (data.get("name") or "").strip()
@@ -1450,8 +1447,8 @@ async def category_add_api(request: Request):
     return {"code": 0, "msg": "ok", "data": out}
 
 
-async def category_update_api(request: Request):
-    data = await read_json_optional(request) or {}
+def category_update_api(request: Request):
+    data = anyio.from_thread.run(read_json_optional, request) or {}
     category_id = data.get("id")
     if category_id is None:
         raise ValueError("缺少参数 id")
@@ -1467,8 +1464,8 @@ async def category_update_api(request: Request):
     return {"code": 0, "msg": "ok", "data": out}
 
 
-async def category_delete_api(request: Request):
-    data = await read_json_optional(request) or {}
+def category_delete_api(request: Request):
+    data = anyio.from_thread.run(read_json_optional, request) or {}
     category_id = data.get("id")
     if category_id is None:
         raise ValueError("缺少参数 id")
@@ -1480,8 +1477,8 @@ async def category_delete_api(request: Request):
     return {"code": 0, "msg": "ok", "data": out}
 
 
-async def search_api(request: Request):
-    data = await read_json_optional(request) or {}
+def search_api(request: Request):
+    data = anyio.from_thread.run(read_json_optional, request) or {}
     db_id = data.get("db_id")
     db_name = (data.get("db_name") or data.get("name") or "").strip()
     query = (data.get("query") or data.get("question") or "").strip()

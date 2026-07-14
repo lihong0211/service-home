@@ -1,11 +1,11 @@
-import json
 import asyncio
 import tempfile
 import os
 from fastapi import Request
 from fastapi.responses import StreamingResponse, Response
-from dashscope import Generation
 import requests as req_lib
+
+from service.ai._dashscope_common import call_dashscope_text
 
 
 async def blog_script_api(request: Request):
@@ -42,12 +42,7 @@ async def blog_script_api(request: Request):
 
 直接输出播客脚本，不要任何前言。"""
 
-    resp = Generation.call(
-        model="qwen-turbo",
-        messages=[{"role": "user", "content": prompt}],
-        result_format="message",
-    )
-    script = resp.output.choices[0].message.content.strip()
+    script = call_dashscope_text(prompt)
 
     return {
         "code": 0, "msg": "success",
@@ -75,12 +70,7 @@ async def blog_to_podcast_api(request: Request):
         return {"code": 500, "msg": f"网页抓取失败: {str(e)}"}
 
     prompt = f"""将以下博客改写成播客脚本（600字以内，适合TTS朗读，无Markdown）：\n{text[:2000]}"""
-    resp = Generation.call(
-        model="qwen-turbo",
-        messages=[{"role": "user", "content": prompt}],
-        result_format="message",
-    )
-    script = resp.output.choices[0].message.content.strip()[:600]
+    script = call_dashscope_text(prompt)[:600]
 
     # TTS
     import edge_tts

@@ -1,4 +1,3 @@
-import json
 import hashlib
 import os
 import tempfile
@@ -6,8 +5,10 @@ from fastapi import Request, UploadFile
 from fastapi.responses import StreamingResponse
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct
-from dashscope import Generation, TextEmbedding
-import dashscope
+from dashscope import TextEmbedding
+
+from config.ai import DEFAULT_EMBEDDING_MODEL
+from service.ai._dashscope_common import stream_dashscope_sse
 
 QDRANT_PATH = os.path.join(os.path.dirname(__file__), "../../../data/vector_dbs")
 EMBED_DIM = 1536
@@ -21,7 +22,7 @@ def _embed_texts(texts: list[str]) -> list[list[float]]:
     all_vecs = []
     for i in range(0, len(texts), 10):
         batch = texts[i:i + 10]
-        resp = TextEmbedding.call(model="text-embedding-v4", input=batch)
+        resp = TextEmbedding.call(model=DEFAULT_EMBEDDING_MODEL, input=batch)
         all_vecs.extend([e["embedding"] for e in resp.output["embeddings"]])
     return all_vecs
 
@@ -92,20 +93,8 @@ async def pdf_ask_api(request: Request):
     )
     context = "\n\n".join(p.payload["text"] for p in results.points)
 
-    def generate():
-        resp = Generation.call(
-            model="qwen-turbo",
-            messages=[
-                {"role": "system", "content": "你是一个 PDF 文档助手，只根据提供的文档内容回答问题。如果文档中没有相关信息，请明确说明。"},
-                {"role": "user", "content": f"文档内容：\n{context}\n\n问题：{question}"},
-            ],
-            stream=True,
-            result_format="message",
-        )
-        for chunk in resp:
-            delta = chunk.output.choices[0].message.content if chunk.output.choices else ""
-            if delta:
-                yield f"data: {json.dumps({'response': delta}, ensure_ascii=False)}\n\n"
-        yield "data: [DONE]\n\n"
-
-    return StreamingResponse(generate(), media_type="text/event-stream")
+    system_prompt = "你是一个 PDF 文档助手，只根据提供的文档内容回答问题。如果文档中没有相关信息，请明确说明。"
+    user_prompt = f"文档内容：\n{context}\n\n问题：{question}"
+    return StreamingResponse(
+        stream_dashscope_sse(system_prompt, user_prompt), media_type="text/event-stream"
+    )

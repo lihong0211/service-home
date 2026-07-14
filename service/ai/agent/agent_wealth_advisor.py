@@ -11,7 +11,6 @@
 """
 
 import json
-import os
 from typing import Any, Dict, Literal, Optional, TypedDict
 
 from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
@@ -20,12 +19,12 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 
 from service.ai.langchain import graph_to_schema, run_graph_stream_and_collect
+from config.ai import DASHSCOPE_BASE_URL, DEFAULT_CHAT_MODEL, dashscope_api_key
 
-_API_KEY = os.environ.get("DASHSCOPE_API_KEY")
 _LLM = ChatOpenAI(
-    model="qwen-turbo",
-    openai_api_key=_API_KEY,
-    openai_api_base="https://dashscope.aliyuncs.com/compatible-mode/v1",
+    model=DEFAULT_CHAT_MODEL,
+    openai_api_key=dashscope_api_key(),
+    openai_api_base=DASHSCOPE_BASE_URL,
     temperature=0.7,
     max_tokens=2000,
 )

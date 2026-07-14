@@ -20,6 +20,8 @@ from typing import Any, Dict, List, Optional
 
 import dashscope
 
+from config.ai import DEFAULT_CHAT_MODEL
+
 dashscope.api_key = os.getenv("DASHSCOPE_API_KEY")
 
 # 业务数据查询工具：自然语言 -> 数据库查询结果
@@ -95,7 +97,7 @@ def _get_business_data(question: str) -> dict:
 
     if not (question or "").strip():
         return {"error": "请提供查询描述", "data": [], "sql": ""}
-    out = text2sql_run(question=question.strip(), model="qwen-turbo", max_rows=500)
+    out = text2sql_run(question=question.strip(), model=DEFAULT_CHAT_MODEL, max_rows=500)
     if out.get("error"):
         return {
             "error": out["error"],
@@ -194,7 +196,7 @@ def _run_tool(name: str, arguments: dict) -> str:
 
 def run_mcp_ppt_chat(
     messages: List[dict],
-    model: str = "qwen-turbo",
+    model: str = DEFAULT_CHAT_MODEL,
     system_message: Optional[str] = None,
     max_iterations: int = 8,
 ) -> dict:

@@ -7,21 +7,31 @@ import os
 import json
 import asyncio
 
+import anyio.to_thread
 import httpx
 from fastapi import Request
 from fastapi.responses import StreamingResponse
-from openai import OpenAI
 
 from utils.http_body import read_json_optional
+from config.ai import DEFAULT_CHAT_MODEL
+from service.ai._dashscope_common import get_dashscope_client
 
 _OLLAMA_BASE = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-_AGGREGATE_MODEL = "qwen-turbo"
+_AGGREGATE_MODEL = DEFAULT_CHAT_MODEL
 
-_client = OpenAI(
-    api_key=os.getenv("DASHSCOPE_API_KEY"),
-    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-    timeout=60.0,
-)
+_client = get_dashscope_client(timeout=60.0)
+
+_SENTINEL = object()
+
+
+async def _iter_sync_stream(stream):
+    """把同步 SDK 的 stream 迭代逐个 chunk 挪到线程池执行，避免阻塞事件循环。"""
+    it = iter(stream)
+    while True:
+        chunk = await anyio.to_thread.run_sync(next, it, _SENTINEL)
+        if chunk is _SENTINEL:
+            return
+        yield chunk
 
 
 async def list_models_api(request: Request):
@@ -79,15 +89,17 @@ async def mixture_chat_api(request: Request):
             f"综合最优答案："
         )
 
-        stream = _client.chat.completions.create(
-            model=_AGGREGATE_MODEL,
-            messages=[{"role": "user", "content": aggregate_prompt}],
-            temperature=0.3,
-            max_tokens=1024,
-            stream=True,
+        stream = await anyio.to_thread.run_sync(
+            lambda: _client.chat.completions.create(
+                model=_AGGREGATE_MODEL,
+                messages=[{"role": "user", "content": aggregate_prompt}],
+                temperature=0.3,
+                max_tokens=1024,
+                stream=True,
+            )
         )
 
-        for chunk in stream:
+        async for chunk in _iter_sync_stream(stream):
             delta = chunk.choices[0].delta if chunk.choices else None
             if delta and delta.content:
                 yield f"data: {json.dumps({'type': 'aggregate', 'response': delta.content}, ensure_ascii=False)}\n\n"

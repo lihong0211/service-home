@@ -4,7 +4,8 @@ import base64
 import tempfile
 import os
 from fastapi import Request, UploadFile
-from dashscope import Generation
+
+from service.ai._dashscope_common import call_dashscope_text
 
 
 async def data_viz_columns_api(request: Request):
@@ -63,12 +64,7 @@ async def data_viz_api(request: Request):
 
 代码："""
 
-    resp = Generation.call(
-        model="qwen-turbo",
-        messages=[{"role": "user", "content": code_prompt}],
-        result_format="message",
-    )
-    code = resp.output.choices[0].message.content.strip()
+    code = call_dashscope_text(code_prompt)
     if "```" in code:
         lines = code.split("\n")
         code_lines = []

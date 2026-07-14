@@ -13,6 +13,7 @@ import dashscope
 from fastapi import Request
 
 from utils.http_body import read_json_optional
+from config.ai import DEFAULT_CHAT_MODEL
 
 dashscope.api_key = os.getenv("DASHSCOPE_API_KEY")
 
@@ -45,7 +46,7 @@ def _nl_to_sql(question: str, table_name: str, columns: list[dict]) -> str:
         f"- Column names with spaces must be quoted with double quotes\n"
     )
     resp = dashscope.Generation.call(
-        model="qwen-turbo",
+        model=DEFAULT_CHAT_MODEL,
         messages=[{"role": "user", "content": prompt}],
         result_format="message",
         temperature=0,

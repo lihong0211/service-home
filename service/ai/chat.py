@@ -5,6 +5,7 @@ Ollama 聊天服务 - 封装本地 Ollama API，支持流式输出
 import json
 import re
 import requests
+import anyio.from_thread
 from fastapi import Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -50,15 +51,15 @@ def _dedupe_vision_content(text):
     return "\n".join(deduped)
 
 
-async def chat(request: Request):
+def chat(request: Request):
     """Ollama 对话接口（纯文本/对话，不处理图片）
 
     请求：{ "messages": [...], "model": "可选", "stream": true, "options": {} }
     响应：stream=false 时 { "code": 0, "message": {...} }；stream=true 时 SSE
     """
-    data = await read_json_optional(request)
+    data = anyio.from_thread.run(read_json_optional, request)
     if not data:
-        raw = await request.body()
+        raw = anyio.from_thread.run(request.body)
         if raw:
             raise ValueError("Invalid JSON or body too large")
 
@@ -86,11 +87,11 @@ async def chat(request: Request):
         raise
 
 
-async def ocr_chat(request: Request):
+def ocr_chat(request: Request):
     """专用 OCR 接口：固定 OCR_MODEL，只收图。请求：{ "images": ["<base64>"] 或 "image": "<base64>", "stream": true, "options": {} }"""
-    data = await read_json_optional(request)
+    data = anyio.from_thread.run(read_json_optional, request)
     if not data:
-        raw = await request.body()
+        raw = anyio.from_thread.run(request.body)
         if raw:
             raise ValueError("Invalid JSON or body too large")
 

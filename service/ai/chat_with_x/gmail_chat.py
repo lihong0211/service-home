@@ -12,11 +12,11 @@ Gmail 智能助手 - 需要 Google OAuth 2.0 配置
 4. 启用 Gmail API：https://console.cloud.google.com/apis/library/gmail.googleapis.com
 5. 将 client_id 和 client_secret 写入 .env 文件
 """
-import json
 import os
 from fastapi import Request
 from fastapi.responses import RedirectResponse
-from dashscope import Generation
+
+from service.ai._dashscope_common import call_dashscope_text
 
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
@@ -110,12 +110,7 @@ async def gmail_summarize_api(request: Request):
             body_data = payload["parts"][0].get("body", {}).get("data", "")
         text = base64.urlsafe_b64decode(body_data + "==").decode("utf-8", errors="ignore") if body_data else detail.get("snippet", "")
 
-        resp = Generation.call(
-            model="qwen-turbo",
-            messages=[{"role": "user", "content": f"请用3-5句话总结以下邮件内容：\n{text[:2000]}"}],
-            result_format="message",
-        )
-        summary = resp.output.choices[0].message.content.strip()
+        summary = call_dashscope_text(f"请用3-5句话总结以下邮件内容：\n{text[:2000]}")
         return {"code": 0, "msg": "success", "data": {"summary": summary, "full_text": text[:500]}}
     except Exception as e:
         return {"code": 500, "msg": str(e)}
@@ -131,12 +126,7 @@ async def gmail_reply_draft_api(request: Request):
         detail = service.users().messages().get(userId="me", id=message_id, format="full").execute()
         snippet = detail.get("snippet", "")
 
-        resp = Generation.call(
-            model="qwen-turbo",
-            messages=[{"role": "user", "content": f"根据以下邮件内容，写一封{intent}的回复邮件（200字以内）：\n{snippet}"}],
-            result_format="message",
-        )
-        draft = resp.output.choices[0].message.content.strip()
+        draft = call_dashscope_text(f"根据以下邮件内容，写一封{intent}的回复邮件（200字以内）：\n{snippet}")
         return {"code": 0, "msg": "success", "data": {"draft": draft}}
     except Exception as e:
         return {"code": 500, "msg": str(e)}

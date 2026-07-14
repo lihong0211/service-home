@@ -6,13 +6,20 @@ RAG 模块：基于知识库的检索与问答。
 - 返回前后状态供前端展示
 """
 
+import logging
+
+import anyio.from_thread
 from fastapi import Request
 
 from service.ai.vector_db_qdrant import client, search_in_db
 from utils.http_body import read_json_optional
-from service.ai.rag_enhance import query_rewrite, rerank_documents
+from service.ai.rag_enhance import query_rewrite, rerank_documents, build_rag_answer_prompt
 from service.ai import bm25_es
+from service.ai._dashscope_common import call_openai_chat_with_retry
+from config.ai import DEFAULT_CHAT_MODEL, DEFAULT_RERANK_MODEL
 from model.ai import VectorDb, KnowledgeBase
+
+logger = logging.getLogger(__name__)
 
 
 def _results_to_sources(results: list, use_relevance_score: bool = False) -> list:
@@ -91,7 +98,7 @@ def rag_chat(
     kb_name: str = None,
     question: str = None,
     top_k: int = 5,
-    model: str = "qwen-turbo",
+    model: str = DEFAULT_CHAT_MODEL,
     enable_query_rewrite: bool = False,
     enable_rerank: bool = False,
     enable_hybrid: bool = True,
@@ -102,8 +109,8 @@ def rag_chat(
     category: str | None = None,
     metadata_filter: dict | None = None,
     conversation_history: str = "",
-    query_rewrite_model: str = "qwen-turbo",
-    rerank_model: str = "qwen3-rerank",
+    query_rewrite_model: str = DEFAULT_CHAT_MODEL,
+    rerank_model: str = DEFAULT_RERANK_MODEL,
 ) -> dict:
     """
     基于知识库的 RAG 问答：可选 Query 改写、Rerank，再检索与生成答案。
@@ -190,9 +197,9 @@ def rag_chat(
             )
             if bm25_res.get("ok") and bm25_res.get("hits"):
                 results = _merge_dense_and_bm25(results, bm25_res["hits"], retrieve_k)
-        except Exception:
-            # ES 作为可选组件：失败不影响主流程
-            pass
+        except Exception as e:
+            # ES 作为可选组件：失败不影响主流程，但需要留痕方便排查
+            logger.warning("BM25 兜底召回失败，跳过: %s", e)
     if not results:
         rewritten_query = query_rewrite_state.get("rewritten_query") if query_rewrite_state else None
         return {
@@ -223,16 +230,10 @@ def rag_chat(
         context_parts.append(doc.get("text", ""))
     sources = _results_to_sources(results, use_relevance_score=enable_rerank)
     context = "\n\n---\n\n".join(context_parts)
-    prompt = f"""基于以下参考资料回答问题。若资料中无相关内容，请说明无法从资料中得出答案。
-
-参考资料：
-{context}
-
-问题：{question.strip()}
-
-请直接给出答案（可简要说明依据的段落或页码）："""
+    prompt = build_rag_answer_prompt(question, context)
     try:
-        resp = client.chat.completions.create(
+        resp = call_openai_chat_with_retry(
+            client,
             model=model,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
@@ -240,6 +241,7 @@ def rag_chat(
         )
         answer = (resp.choices[0].message.content or "").strip()
     except Exception as e:
+        logger.error("RAG 生成回答失败: %s", e)
         answer = f"大模型调用失败: {e}"
 
     # 启用改写时返回改写后的 query（顶层便于前端展示）
@@ -257,7 +259,7 @@ def rag_chat(
     return out
 
 
-async def rag_ask_api(request: Request):
+def rag_ask_api(request: Request):
     """
     基于知识库的 RAG 问答。
     POST body:
@@ -268,7 +270,7 @@ async def rag_ask_api(request: Request):
       - enable_rerank (bool): 是否启用 Rerank，返回 rerank 前后状态
       - conversation_history (str): 对话历史，供 Query 改写使用
     """
-    data = await read_json_optional(request) or {}
+    data = anyio.from_thread.run(read_json_optional, request) or {}
     kb_id = data.get("knowledge_base_id") or data.get("kb_id") or data.get("db_id")
     kb_name = (
         data.get("knowledge_base_name")
@@ -296,7 +298,7 @@ async def rag_ask_api(request: Request):
         top_k = max(1, min(20, int(top_k)))
     except (TypeError, ValueError):
         top_k = 5
-    model = (data.get("model") or "qwen-turbo").strip() or "qwen-turbo"
+    model = (data.get("model") or DEFAULT_CHAT_MODEL).strip() or DEFAULT_CHAT_MODEL
     enable_query_rewrite = bool(data.get("enable_query_rewrite", False))
     enable_rerank = bool(data.get("enable_rerank", False))
     enable_hybrid = bool(data.get("enable_hybrid", True))
@@ -342,14 +344,14 @@ async def rag_ask_api(request: Request):
     return {"code": 0, "msg": "ok", "data": out}
 
 
-async def rag_search_api(request: Request):
+def rag_search_api(request: Request):
     """
     在指定知识库中做向量检索（不调用大模型）。
-    POST body: { "knowledge_base_id"/"kb_name" 或 "knowledge_base_name", "query", "top_k": 3, 
+    POST body: { "knowledge_base_id"/"kb_name" 或 "knowledge_base_name", "query", "top_k": 3,
                  "enable_query_rewrite": bool, "enable_rerank": bool, "conversation_history": str }
     """
     from service.ai.rag_enhance import query_rewrite, rerank_documents
-    data = await read_json_optional(request) or {}
+    data = anyio.from_thread.run(read_json_optional, request) or {}
     kb_id = data.get("knowledge_base_id") or data.get("kb_id") or data.get("db_id")
     kb_name = (
         data.get("knowledge_base_name")

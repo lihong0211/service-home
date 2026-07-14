@@ -5,6 +5,7 @@ import os
 import re
 from urllib.parse import quote_plus
 
+import anyio.from_thread
 from fastapi import Request
 
 from utils.http_body import query_dict, read_json_optional
@@ -15,6 +16,7 @@ from langchain_community.agent_toolkits import create_sql_agent
 from langchain_openai import ChatOpenAI
 
 from config.db import DB_AI_CONFIG
+from config.ai import DEFAULT_CHAT_MODEL
 
 
 def _ai_db_uri() -> str:
@@ -66,7 +68,7 @@ def _extract_sql_from_agent_steps(intermediate_steps: list) -> str:
     return sql
 
 
-def text2sql_run(question: str, model: str = "qwen-turbo", max_rows: int = 500) -> dict:
+def text2sql_run(question: str, model: str = DEFAULT_CHAT_MODEL, max_rows: int = 500) -> dict:
     if not (question or "").strip():
         return {"sql": "", "data": [], "error": "请提供 question"}
     engine = _ai_engine()
@@ -117,10 +119,10 @@ def text2sql_run(question: str, model: str = "qwen-turbo", max_rows: int = 500) 
         return {"sql": sql, "data": [], "error": f"执行 SQL 失败: {e}"}
 
 
-async def text2sql_api(request: Request):
-    data = await read_json_optional(request) or {}
+def text2sql_api(request: Request):
+    data = anyio.from_thread.run(read_json_optional, request) or {}
     question = (data.get("question") or data.get("query") or "").strip()
-    model = (data.get("model") or "qwen-turbo").strip() or "qwen-turbo"
+    model = (data.get("model") or DEFAULT_CHAT_MODEL).strip() or DEFAULT_CHAT_MODEL
     max_rows = data.get("max_rows", 500)
     try:
         max_rows = max(1, min(2000, int(max_rows)))
@@ -211,11 +213,11 @@ def table_data_run(table_name: str, page: int = 1, page_size: int = 20) -> dict:
         }
 
 
-async def table_data_api(request: Request):
+def table_data_api(request: Request):
     if request.method == "GET":
         params = query_dict(request)
     else:
-        params = await read_json_optional(request) or {}
+        params = anyio.from_thread.run(read_json_optional, request) or {}
     table_name = (params.get("table") or params.get("table_name") or "").strip()
     page = params.get("page", 1)
     page_size = params.get("page_size", 20)

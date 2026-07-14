@@ -23,10 +23,12 @@ from typing import Annotated, TypedDict
 import dashscope
 import requests
 
+import anyio.from_thread
 from fastapi import Request
 from fastapi.responses import StreamingResponse
 
 from utils.http_body import query_dict, read_json_optional
+from config.ai import DEFAULT_CHAT_MODEL
 
 # LangGraph 图与状态
 from langgraph.graph import END, StateGraph
@@ -44,7 +46,7 @@ MAX_HISTORY_TURNS_CONTEXT = 20  # 拼进 prompt 的「上文」最近轮数（th
 # 公共 LLM 调用 helper（Qwen via Dashscope）
 # ---------------------------------------------------------------------------
 
-def _call_llm_messages(messages: list, model: str = "qwen-turbo") -> str:
+def _call_llm_messages(messages: list, model: str = DEFAULT_CHAT_MODEL) -> str:
     """多轮对话：messages 为 [{"role":"system"|"user"|"assistant", "content": "..."}, ...]，返回最后一轮 assistant 回复。"""
     if not messages:
         return ""
@@ -70,7 +72,7 @@ def _call_llm_messages(messages: list, model: str = "qwen-turbo") -> str:
     return ""
 
 
-def _call_llm(prompt: str, system: str = "你是一个专业的AI助手，请简洁准确地回答。", model: str = "qwen-turbo") -> str:
+def _call_llm(prompt: str, system: str = "你是一个专业的AI助手，请简洁准确地回答。", model: str = DEFAULT_CHAT_MODEL) -> str:
     """调用 Qwen 大模型，返回纯文本结果。兼容 output.choices 与 output.text 两种返回格式。"""
     resp = dashscope.Generation.call(
         model=model,
@@ -949,7 +951,7 @@ def run_graph_and_collect_steps(graph_name: str, input_state: dict | None = None
 # ---------------------------------------------------------------------------
 
 
-async def langgraph_graph_api(request: Request):
+def langgraph_graph_api(request: Request):
     """GET /ai/langgraph/graph?name=router 返回图结构，供前端 3D 可视化（GraphData）。"""
     q = query_dict(request)
     name = q.get("name") or "router"
@@ -966,7 +968,7 @@ async def langgraph_graph_api(request: Request):
     return {"code": 0, "msg": "ok", "data": schema}
 
 
-async def langgraph_run_api(request: Request):
+def langgraph_run_api(request: Request):
     """
     POST /ai/langgraph/run 执行图并返回步骤与最终状态，供前端按真实执行顺序驱动 3D 动画。
 
@@ -984,7 +986,7 @@ async def langgraph_run_api(request: Request):
     流式（body.stream=true）：SSE，先 type=init（含 graphData、totalNodes），再 type=step 若干次，最后 type=done
     （含 finalState、steps、totalNodes、completedSteps、executionProgress、response）；前端按 step 播动画，收到 done 后展示 response。
     """
-    body = (await read_json_optional(request)) or {}
+    body = anyio.from_thread.run(read_json_optional, request) or {}
     graph_name = body.get("graph") or "router"
     stream = body.get("stream", False)
     input_state = body.get("input")

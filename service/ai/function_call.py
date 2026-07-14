@@ -10,6 +10,7 @@ import requests
 from fastapi import Request
 
 from utils.http_body import read_json_optional
+from config.ai import DEFAULT_CHAT_MODEL
 
 dashscope.api_key = os.getenv("DASHSCOPE_API_KEY")
 _GAODE_API_KEY = os.getenv("AMAP_MAPS_API_KEY")
@@ -59,7 +60,7 @@ def _run_tool(name: str, arguments: dict):
 
 def run_function_calling_chat(
     messages: list,
-    model: str = "qwen-turbo",
+    model: str = DEFAULT_CHAT_MODEL,
     system_message: str = None,
     max_iterations: int = 5,
 ):
@@ -153,7 +154,7 @@ async def function_calling_chat_api(request: Request):
     try:
         out = run_function_calling_chat(
             messages,
-            model=body.get("model", "qwen-turbo"),
+            model=body.get("model", DEFAULT_CHAT_MODEL),
             system_message=body.get("system_message"),
             max_iterations=5,
         )

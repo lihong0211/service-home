@@ -25,6 +25,7 @@ import os
 import uuid
 from typing import Annotated, Any, Dict, List, Literal, Optional, TypedDict
 
+import anyio.from_thread
 from fastapi import Request
 
 from utils.http_body import read_json_optional
@@ -493,7 +494,7 @@ def get_session_info(session_id: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
-async def doctor_chat_api(request: Request):
+def doctor_chat_api(request: Request):
     """
     POST /ai/doctor/chat
 
@@ -515,7 +516,7 @@ async def doctor_chat_api(request: Request):
             }
         }
     """
-    body = (await read_json_optional(request)) or {}
+    body = anyio.from_thread.run(read_json_optional, request) or {}
     session_id = (body.get("session_id") or "").strip() or str(uuid.uuid4())
     message = (body.get("message") or "").strip()
 
@@ -530,7 +531,7 @@ async def doctor_chat_api(request: Request):
     }
 
 
-async def doctor_session_api(request: Request, session_id: str):
+def doctor_session_api(request: Request, session_id: str):
     """
     GET /ai/doctor/session/<session_id>
 

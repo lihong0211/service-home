@@ -12,22 +12,19 @@ import asyncio
 
 from fastapi import Request
 from fastapi.responses import StreamingResponse
-from openai import OpenAI
 
 from utils.http_body import read_json_optional
+from config.ai import DEFAULT_CHAT_MODEL, DEFAULT_EMBEDDING_MODEL
+from service.ai._dashscope_common import get_dashscope_client
 
-_MODEL = "qwen-turbo"
+_MODEL = DEFAULT_CHAT_MODEL
 _DIMENSION = int(os.getenv("VECTOR_DB_DIMENSION", "1024"))
 _CHUNK_SIZE = 1000
 _CHUNK_OVERLAP = 100
 _MAX_CHUNKS = 200
 _EMBED_BATCH_SIZE = 10
 
-_client = OpenAI(
-    api_key=os.getenv("DASHSCOPE_API_KEY"),
-    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-    timeout=60.0,
-)
+_client = get_dashscope_client(timeout=60.0)
 
 
 def _extract_video_id(url: str) -> str:
@@ -135,7 +132,7 @@ def _get_embeddings_batch(texts: list[str]) -> list[list[float]]:
         for attempt in range(3):
             try:
                 resp = _client.embeddings.create(
-                    model="text-embedding-v4",
+                    model=DEFAULT_EMBEDDING_MODEL,
                     input=batch,
                     dimensions=_DIMENSION,
                     encoding_format="float",

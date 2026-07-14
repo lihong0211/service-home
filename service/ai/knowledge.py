@@ -14,6 +14,7 @@ import shutil
 import tempfile
 from datetime import datetime
 
+import anyio.from_thread
 from fastapi import Request
 from utils.http_body import (
     collect_upload_files_from_form,
@@ -213,30 +214,46 @@ def _documents_from_docx(
     chunk_overlap: int = 200,
 ) -> list[dict]:
     """
-    从 DOCX 提取全文（段落+表格）后按固定长度分片。
+    从 DOCX 按段落/表格边界分片：相邻段落/表格累加到接近 chunk_size 再切块，
+    只有单个段落/表格本身就超过 chunk_size 时才对其内部做定长切分。
     - category 为来源文件名（source_name）
-    - 不保留段落/表格边界信息
     - 返回 [{"id": "{source}_c{i}", "text": str, "category": str}, ...]
     """
     from docx import Document as DocxDocument
     doc = DocxDocument(docx_path)
     source = source_name or "docx"
-    parts = []
+    units = []
     for para in doc.paragraphs:
         t = (para.text or "").strip()
         if t:
-            parts.append(t)
+            units.append(t)
     for table in doc.tables:
         rows = []
         for row in table.rows:
             rows.append(" | ".join((c.text or "").strip() for c in row.cells))
         t = "\n".join(rows).strip()
         if t:
-            parts.append(t)
-    full_text = "\n\n".join(parts)
-    if not full_text.strip():
+            units.append(t)
+    if not units:
         return []
-    chunks = _chunk_text(full_text, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+
+    chunks: list[str] = []
+    current = ""
+    for unit in units:
+        candidate = f"{current}\n\n{unit}" if current else unit
+        if len(candidate) <= chunk_size:
+            current = candidate
+            continue
+        if current:
+            chunks.append(current)
+        if len(unit) > chunk_size:
+            chunks.extend(_chunk_text(unit, chunk_size=chunk_size, chunk_overlap=chunk_overlap))
+            current = ""
+        else:
+            current = unit
+    if current:
+        chunks.append(current)
+
     return [
         {"id": f"{source}_c{i}", "text": c, "category": source}
         for i, c in enumerate(chunks)
@@ -608,19 +625,19 @@ def _list_knowledge_bases_from_mysql() -> list[dict]:
 
 # --------------- HTTP 接口 ---------------
 
-async def list_knowledge_bases_api(request: Request):
+def list_knowledge_bases_api(request: Request):
     """列出所有知识库（查 knowledge_base 表）。GET 或 POST 均可。"""
     items = _list_knowledge_bases_from_mysql()
     return ({"code": 0, "msg": "ok", "data": {"list": items, "names": [x["name"] for x in items]}})
 
 
-async def create_knowledge_base_api(request: Request):
+def create_knowledge_base_api(request: Request):
     """
     新增知识库：仅写 knowledge_base 表（名称、描述、策略等），不建向量库；向量化在「向量化」步骤执行。
     POST body: { "name": "库名", "description": "可选" }
     """
     from model.ai import KnowledgeBase
-    data = await read_json_optional(request) or {}
+    data = anyio.from_thread.run(read_json_optional, request) or {}
     name = (data.get("name") or data.get("db") or "").strip()
     if not name:
         raise ValueError("缺少参数 name 或 db（需 POST JSON body）")
@@ -649,7 +666,7 @@ async def create_knowledge_base_api(request: Request):
     })
 
 
-async def create_knowledge_base_from_pdf_api(request: Request):
+def create_knowledge_base_from_pdf_api(request: Request):
     """
     从 PDF 创建知识库：写 knowledge_base + knowledge_base_document + knowledge_base_segment，并执行向量化。
     POST multipart/form-data: name（必填）, file（PDF 文件）, description/chunk_size/chunk_overlap 可选。
@@ -657,7 +674,7 @@ async def create_knowledge_base_from_pdf_api(request: Request):
     import tempfile
     from model.ai import KnowledgeBase
 
-    form = await request.form()
+    form = anyio.from_thread.run(request.form)
     name = (form.get("name") or form.get("db") or "").strip()
     if not name:
         raise ValueError("缺少参数 name 或 db")
@@ -682,7 +699,7 @@ async def create_knowledge_base_from_pdf_api(request: Request):
     try:
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
             tmp_path = tmp.name
-        await write_upload_to_disk(f, tmp_path)
+        anyio.from_thread.run(write_upload_to_disk, f, tmp_path)
         documents = _documents_from_pdf(tmp_path, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
         if not documents:
             raise ValueError("PDF 中未提取到有效文本")
@@ -710,7 +727,7 @@ async def create_knowledge_base_from_pdf_api(request: Request):
                 pass
 
 
-async def preview_segments_from_db_api(request: Request):
+def preview_segments_from_db_api(request: Request):
     """
     分段预览（已落库）：按文档 id 列表直接返回库中已有分段，不解析文件。
     GET /ai/knowledge-base/segments/preview?document_ids=1,2,3
@@ -775,7 +792,7 @@ def _resegment_one_document(document_id: int, chunk_size: int, chunk_overlap: in
     return len([d for d in documents if (d.get("text") or d.get("content") or "").strip()])
 
 
-async def execute_segments_api(request: Request):
+def execute_segments_api(request: Request):
     """
     执行分段并落库（不向量化）。使用文档列表 + 分层参数（分段长度、分段重叠）。
     两种用法：
@@ -784,7 +801,7 @@ async def execute_segments_api(request: Request):
     POST body: JSON，如 { "document_ids": [1, 2], "chunk_size": 1000, "chunk_overlap": 200 }
     """
     from model.ai import KnowledgeBaseDocument, KnowledgeBaseSegment
-    data = (await read_json_or_form_fields(request)) or {}
+    data = anyio.from_thread.run(read_json_or_form_fields, request) or {}
     document_ids = data.get("document_ids")
     kb_id = data.get("kb_id")
     file_id = data.get("file_id")
@@ -849,7 +866,7 @@ async def execute_segments_api(request: Request):
     raise ValueError("请提供 document_ids（文档列表+分层参数重新分段）或 kb_id+file_id+file_name（对已上传文件执行分段并加入知识库）")
 
 
-async def upload_knowledge_base_api(request: Request):
+def upload_knowledge_base_api(request: Request):
     """
     知识库上传资料：仅保存文件到项目目录 data/knowledge_base/{kb_id}/ 并写入
     knowledge_base_document + knowledge_base_segment，不自动向量化；需要检索时再调 POST /ai/knowledge-base/vectorize。
@@ -860,7 +877,7 @@ async def upload_knowledge_base_api(request: Request):
     from sqlalchemy.exc import IntegrityError
     from app.app import db
     from model.ai import KnowledgeBase
-    form = await request.form()
+    form = anyio.from_thread.run(request.form)
     # 支持多文件：收集所有名为 file / file[] / file[0] / files 的表单文件
     file_list = collect_upload_files_from_form(form)
     if not file_list or not any((f and (f.filename or "").strip()) for f in file_list):
@@ -953,7 +970,7 @@ async def upload_knowledge_base_api(request: Request):
                 with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
                     tmp_path = tmp.name
                     tmp_paths.append(tmp_path)
-                    await write_upload_to_disk(f, tmp_path)
+                    anyio.from_thread.run(write_upload_to_disk, f, tmp_path)
                 # 先保存文件到知识库文件夹，即使解析失败也要保存
                 saved_path = _save_upload_to_kb_folder(kb_id, tmp_path, fn)
                 # 更新已存在列表，避免同批次重复
@@ -1052,7 +1069,7 @@ async def upload_knowledge_base_api(request: Request):
                     pass
 
 
-async def list_knowledge_base_documents_api(request: Request):
+def list_knowledge_base_documents_api(request: Request):
     """
     按知识库 id 获取文档列表（用于「分段预览」步骤左侧文档列表）。
     GET /ai/knowledge-base/documents?kb_id=1 或 ?kb_name=xxx
@@ -1095,7 +1112,7 @@ async def list_knowledge_base_documents_api(request: Request):
     return ({"code": 0, "msg": "ok", "data": {"list": list_, "total": len(list_)}})
 
 
-async def get_document_segments_api(request: Request, document_id: int):
+def get_document_segments_api(request: Request, document_id: int):
     """
     按文档 id 获取分段列表（用于「分段预览」步骤右侧分段预览面板）。
     GET /ai/knowledge-base/document/<document_id>/segments
@@ -1148,7 +1165,7 @@ def _resolve_kb_document_path(path: str) -> str | None:
     return None
 
 
-async def preview_knowledge_document_api(request: Request, document_id: int):
+def preview_knowledge_document_api(request: Request, document_id: int):
     """
     GET /ai/knowledge-base/document/<document_id>/preview
     根据知识库文档 id 返回文件预览。文档路径来自 knowledge_base_document.path。
@@ -1182,12 +1199,12 @@ async def preview_knowledge_document_api(request: Request, document_id: int):
     )
 
 
-async def sync_knowledge_base_from_disk_api(request: Request):
+def sync_knowledge_base_from_disk_api(request: Request):
     """
     将磁盘上已存在的向量库同步到 MySQL（补写 vector_db、vector_db_document）。
     POST body: { "name": "disney", "description": "可选" }
     """
-    data = await read_json_optional(request) or {}
+    data = anyio.from_thread.run(read_json_optional, request) or {}
     name = (data.get("name") or data.get("db") or "").strip()
     if not name:
         raise ValueError("缺少参数 name 或 db")
@@ -1198,13 +1215,13 @@ async def sync_knowledge_base_from_disk_api(request: Request):
     return ({"code": 0, "msg": "ok", "data": out})
 
 
-async def rebuild_knowledge_base_api(request: Request):
+def rebuild_knowledge_base_api(request: Request):
     """
     按知识库 id 重建关联的向量库索引（从 MySQL 文档重新生成向量并写回磁盘）。
     POST body: { "id": 1 }（知识库 id）
     """
     from model.ai import KnowledgeBase
-    data = await read_json_optional(request) or {}
+    data = anyio.from_thread.run(read_json_optional, request) or {}
     kb_id = data.get("id")
     if kb_id is None:
         raise ValueError("请提供 id（知识库 id）")
@@ -1221,12 +1238,12 @@ async def rebuild_knowledge_base_api(request: Request):
     return ({"code": 0, "msg": "ok", "data": out})
 
 
-async def vectorize_knowledge_base_api(request: Request):
+def vectorize_knowledge_base_api(request: Request):
     """
     按知识库 id 将该库下全部分段向量化并写入关联向量库（无则创建）。
     POST body: { "knowledge_base_id": 1 }
     """
-    data = await read_json_optional(request) or {}
+    data = anyio.from_thread.run(read_json_optional, request) or {}
     kb_id = data.get("knowledge_base_id")
     if kb_id is None:
         raise ValueError("请提供 knowledge_base_id")
@@ -1238,7 +1255,7 @@ async def vectorize_knowledge_base_api(request: Request):
     return ({"code": 0, "msg": "ok", "data": out})
 
 
-async def vectorize_with_file_api(request: Request):
+def vectorize_with_file_api(request: Request):
     """
     按 file_id 取文件并解析为分段，写入 knowledge_base_document + knowledge_base_segment，再执行向量化。
     请求：POST JSON 或 form — kb_id（知识库 id）, file_id, file_name, chunk_size/chunk_overlap 可选。
@@ -1246,7 +1263,7 @@ async def vectorize_with_file_api(request: Request):
     """
     from model.ai import KnowledgeBase
     from service.ai.files import get_file_path
-    data = await read_json_or_form_fields(request)
+    data = anyio.from_thread.run(read_json_or_form_fields, request)
     kb_id = data.get("kb_id") or data.get("knowledge_base_id")
     file_id = (data.get("file_id") or "").strip()
     file_name = (data.get("file_name") or "").strip()
@@ -1283,13 +1300,13 @@ async def vectorize_with_file_api(request: Request):
     })
 
 
-async def update_knowledge_base_api(request: Request):
+def update_knowledge_base_api(request: Request):
     """
     更新知识库元信息（knowledge_base 表）：name、description、解析/分段策略等；不动文档与向量库。
     POST body: { "id": 1, "name": "可选", "description": "可选", "parsing_strategy", "chunking_strategy", ... }
     """
     from model.ai import KnowledgeBase
-    data = await read_json_optional(request) or {}
+    data = anyio.from_thread.run(read_json_optional, request) or {}
     kb_id = data.get("id")
     if kb_id is None:
         raise ValueError("缺少参数 id")
@@ -1327,10 +1344,10 @@ async def update_knowledge_base_api(request: Request):
     })
 
 
-async def delete_knowledge_base_api(request: Request):
+def delete_knowledge_base_api(request: Request):
     """删除知识库：若有关联向量库则先删向量库（MySQL+磁盘），再删 knowledge_base。POST body: { "id": 1 }"""
     from model.ai import KnowledgeBase
-    data = await read_json_optional(request) or {}
+    data = anyio.from_thread.run(read_json_optional, request) or {}
     kb_id = data.get("id")
     if kb_id is None:
         raise ValueError("缺少参数 id")
@@ -1348,10 +1365,10 @@ async def delete_knowledge_base_api(request: Request):
     return ({"code": 0, "msg": "ok", "data": {"id": kb_id, "name": name}})
 
 
-async def delete_knowledge_base_document_api(request: Request):
+def delete_knowledge_base_document_api(request: Request):
     """删除知识库下的一条文档：删除分段、文档记录，并删除磁盘上的文件。POST body: { "document_id": 1 } 或 { "id": 1 }"""
     from model.ai import KnowledgeBaseDocument, KnowledgeBaseSegment
-    data = await read_json_optional(request) or {}
+    data = anyio.from_thread.run(read_json_optional, request) or {}
     document_id = data.get("document_id") or data.get("id")
     if document_id is None:
         raise ValueError("缺少参数 document_id 或 id")
@@ -1378,7 +1395,7 @@ async def delete_knowledge_base_document_api(request: Request):
     })
 
 
-async def get_knowledge_base_detail_api(request: Request):
+def get_knowledge_base_detail_api(request: Request):
     """获取知识库详情（knowledge_base 表）。GET ?id=1 或 ?name=xxx&with_documents=0|1"""
     from model.ai import KnowledgeBase, KnowledgeBaseDocument, KnowledgeBaseSegment, VectorDb
     kb_id = query_dict(request).get("id")

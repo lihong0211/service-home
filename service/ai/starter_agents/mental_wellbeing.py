@@ -1,7 +1,7 @@
-import json
 from fastapi import Request
 from fastapi.responses import StreamingResponse
-from dashscope import Generation
+
+from service.ai._dashscope_common import stream_dashscope_sse
 
 
 async def wellbeing_chat_api(request: Request):
@@ -28,20 +28,6 @@ async def wellbeing_chat_api(request: Request):
 重要声明：你的支持不替代专业的心理治疗或医疗诊断。
 如果用户表达有自伤或伤害他人的想法，必须立即建议拨打心理援助热线（如：北京 010-82951332，全国 400-161-9995）。"""
 
-    def generate():
-        resp = Generation.call(
-            model="qwen-turbo",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": message},
-            ],
-            stream=True,
-            result_format="message",
-        )
-        for chunk in resp:
-            delta = chunk.output.choices[0].message.content if chunk.output.choices else ""
-            if delta:
-                yield f"data: {json.dumps({'response': delta}, ensure_ascii=False)}\n\n"
-        yield "data: [DONE]\n\n"
-
-    return StreamingResponse(generate(), media_type="text/event-stream")
+    return StreamingResponse(
+        stream_dashscope_sse(system_prompt, message), media_type="text/event-stream"
+    )
