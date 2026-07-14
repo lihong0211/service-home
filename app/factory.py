@@ -51,7 +51,23 @@ async def lifespan(app: FastAPI):
                 stderr=subprocess.DEVNULL,
             )
             print(f"[BG] {label} started", flush=True)
+
+    # MOSS-TTS-Nano ONNX 模型后台预热（如未安装则静默跳过）
+    import concurrent.futures
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="moss-tts-warmup")
+    executor.submit(_warmup_moss_tts)
+
     yield
+
+    executor.shutdown(wait=False)
+
+
+def _warmup_moss_tts() -> None:
+    try:
+        from service.ai.moss_tts import preload
+        preload()
+    except Exception:
+        pass
 
 
 def _http_exception_payload(exc: HTTPException) -> dict:

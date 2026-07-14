@@ -133,6 +133,8 @@ from service.ai.llm_apps.blog_podcast import blog_script_api, blog_to_podcast_ap
 from service.ai.llm_apps.data_viz import data_viz_columns_api, data_viz_api
 from service.ai.llm_apps.tarot_chat import tarot_read_api
 from service.ai.llm_apps.music_gen_agent import music_generate_api, music_status_api
+# moss-tts
+from service.ai.moss_tts import moss_tts_speech_api, moss_tts_status_api
 
 
 async def _dispatch_ai_view(view, request: Request, **path_kwargs):
@@ -375,3 +377,6 @@ def register_ai(router: APIRouter):
     _ai_route(router, "/ai/tarot/read", tarot_read_api, ["POST"])
     _ai_route(router, "/ai/music-gen/generate", music_generate_api, ["POST"])
     _ai_route(router, "/ai/music-gen/status", music_status_api, ["GET"])
+    # moss-tts
+    _ai_route(router, "/ai/moss-tts/speech", moss_tts_speech_api, ["POST"])
+    _ai_route(router, "/ai/moss-tts/status", moss_tts_status_api, ["GET"])

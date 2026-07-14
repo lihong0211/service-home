@@ -65,3 +65,9 @@ test-fixtures/screenshots/
 data/knowledge_base/.preview_cache/
 data/vector_dbs/test/
 
+# Understand-Anything（提交图谱，忽略本地临时文件）
+.understand-anything/intermediate/
+.understand-anything/diff-overlay.json
+.understand-anything/tmp/
+.understand-anything/.trash-*/
+
