@@ -16,3 +16,73 @@
 ### 前端实现：src/service/github-chat.ts、src/pages/GitHubChat.tsx，routes.tsx和MainLayout.tsx各新增一项
 ### 测试结果：索引 anthropics/anthropic-quickstarts 成功（50文件/150片段），问"What is this repository about?"流式回答包含quickstart/anthropic相关内容
 ### 注意事项：使用ZIP下载替代PyGithub API（避免速率限制）；qdrant-client 1.17+ 需用 query_points 替代 search；DashScope text-embedding-v4 批量上限为10条；默认限制50文件/150chunk保证60秒内完成
+
+
+## [2026-07-30] - 知识库分段策略扩展（非 task.json 任务，用户直接需求）
+### 后端实现：
+- service/ai/knowledge.py 新增 chunking_strategy 四选一（fixed 兼容旧值 custom / structure / hierarchy / semantic），复用了此前从未被读取的 KnowledgeBase.chunking_strategy/hierarchy_level/retain_hierarchy 字段。
+- structure：DOCX 按 para.style.name 识别 Heading N，MD 按 # 层级识别，抽出 _build_heading_sections 统一构建 heading_path breadcrumb，写入 segment_metadata。
+- hierarchy：按 hierarchy_level 分组生成父块，父块内再按 chunk_size 切子块；_add_document_and_segments_to_kb / _resegment_one_document 通过 documents 列表里的 `_local_parent_ref` 单遍解析出真实 parent_id（父块必须排在其子块之前，_documents_from_heading_units 已保证顺序）。
+- semantic：_semantic_chunk_text 逐句调用 get_embedding 按相似度断句，>3万字符自动回退固定分片，避免逐句 embedding 拖垮大文档。
+- vector_db_qdrant.py 加 embedding_text 透传（_normalize_documents/_upsert_points）：hierarchy 的子块用自己文本算向量，但存入 payload 的 text 换成父块正文；vectorize_knowledge_base 里父块本身不建索引（避免和子块重复召回）。
+- PDF/PPTX/Excel/图片没有可靠标题结构，structure/hierarchy 对这些格式回退为 fixed；semantic 对除 PPTX 外的格式都生效。
+### 前端实现（doctor-dog-web/apps/ai）：
+- src/service/knowledge-base.ts 加 ChunkingStrategy 类型 + executeSegments 参数。
+- src/pages/KnowledgeBaseNew.tsx Step2「创建设置」加分段策略 Radio.Group，hierarchy 时显示层级深度/保留层级开关，semantic 时显示耗时提示；Step3 分段预览卡片显示 heading breadcrumb、父块/子块 Tag、子块缩进。
+### 测试结果：
+- 用 data/knowledge_base/_bilibili_参考/哔哩哔哩版权与举报申诉规则.docx 做用例，直接调用 _documents_from_docx 验证 fixed（5块，与改动前一致）/structure（7块，每块带完整 heading_path）/hierarchy（hierarchy_level=1 时 3 父块+7 子块，分组正确）。
+- 重启 service-home（端口 3001）后用 curl 走真实 /ai/knowledge-base/upload + /segments/execute 全流程验证，parent_id 在 MySQL 里正确回写为真实 segment id。
+- vectorize 接口未能测通：本机 Qdrant（localhost:6333）未启动，502，与本次改动无关（DASHSCOPE_API_KEY 实测在系统 env 中可用，embedding 调用本身没问题，semantic 策略 curl 测试通过）。
+- 前端 npm run build 无 TS 错误；起 dev server（proxy → 3001），用注入的合成 .md 文件走完整 Step1→3 流程截图确认：策略选择器/条件字段/分段预览的 breadcrumb+父子标记全部正常渲染。
+### 注意事项：
+- 测试用的知识库（test_chunking_qa id=13、test_chunk_ui id=14）已在测试后通过 API 删除，未留脏数据。
+- 要跑 vectorize/RAG 检索验证，本机需先启动 Qdrant（localhost:6333）。
+- 本次改动未涉及 task.json（用户直接提需求，非 task 列表任务），progress 记录仅为方便后续排查。
+
+
+## [2026-07-31] - 知识库/向量库存储命名规则调整（仅对以后新建生效，不迁移现有数据）
+### 后端实现：
+- service/ai/knowledge.py：`_save_upload_to_kb_folder` 从按 kb_id（如 `13`）命名目录改为按 kb 名称命名 `data/knowledge_base/kb_{name}`；两处调用（create_knowledge_base_from_pdf_api、upload_knowledge_base_api）改传 name/kb.name。
+- service/ai/knowledge.py：`vectorize_knowledge_base` 里知识库自动生成的向量库名从 `kb_{knowledge_base_id}` 改为 `vd_{kb.name}`。
+- service/ai/vector_db_qdrant.py：`create_api`（独立"新建向量库"接口）的实际存储名（VectorDb.name / Qdrant collection / 磁盘目录）从用户输入的 name 直接用，改为 `vd_{name}`；uniqueness 检查也改成对 `vd_{name}` 判重。
+- `create_vector_db_from_pdf`（knowledge.py）未改：grep 确认无任何路由/调用方引用，是死代码，未处理。
+### 明确不做的事：
+- 现有目录/collection（`9`/`11`/`12`/`13`/`14`/`15`、`disney`/`drug_indicatons`/`test`/`kb_9`/`kb_11`/`kb_12`）不迁移，用户已确认"以后新建"生效即可。
+### 测试结果：
+- 重启 3001 端口服务后 curl 测试新建知识库上传：目录正确生成为 `data/knowledge_base/kb_test_naming_qa/`。
+- 向量库改名逻辑（vd_{name}）因本机 Qdrant 未启动无法端到端跑通 vectorize，但改动在调用 Qdrant 之前，代码路径简单直接，走查确认正确。
+### 注意事项：
+- 本机 Qdrant（localhost:6333）尚未启动，`/ai/knowledge-base/vectorize` 和独立"新建向量库"接口都会 502，与本次任何改动无关，是环境缺失。
+- 测试产生的 kb_test_naming_qa 目录及 DB 记录已清理。
+
+### 后续修正：vd_ 前缀改为 vdb_（2026-07-31 同日）
+- 用户发现 Qdrant collection 实际是 `vdb_{逻辑名}`（`vdb_` 是 QDRANT_COLLECTION_PREFIX 全局前缀，所有向量库通用，与本次命名无关），确认后要求把逻辑层前缀也从 `vd_` 统一改成 `vdb_`，接受最终 collection 名变成 `vdb_vdb_{name}`（两层前缀叠加，用户已知晓并确认接受）。
+- 改动：knowledge.py `vectorize_knowledge_base` 的 `db_name` 从 `vd_{kb.name}` 改为 `vdb_{kb.name}`；vector_db_qdrant.py `create_api` 同步从 `vd_{name}` 改为 `vdb_{name}`。
+- 测试：新建 KB「test_prefix_qa」→ 向量化 → Qdrant 里出现 `vdb_vdb_test_prefix_qa`，与预期一致；测试数据（KB 记录、Qdrant collection、磁盘目录）已清理。
+
+### 后续修正：知识库自动建库的向量库 description 自动生成（2026-07-31 同日）
+- knowledge.py `vectorize_knowledge_base` 首次创建 VectorDb 行时，description 从 None 改为 `f"知识库{kb.name}向量库"`。
+- 测试：新建 KB「test_desc_qa」→ 向量化 → `/ai/vector-db/detail` 返回 description="知识库test_desc_qa向量库"，符合预期；测试数据已清理。
+
+### 后续需求：RAG 检索加相关度阈值过滤（2026-07-31 同日，用户发现固定 top_k 会把不相关结果凑数进结果列表）
+- 后端 vector_db_qdrant.py `search_in_db` 本来就已支持 score_threshold 参数（相似度，Qdrant 原生 score_threshold），只是前端从未传过。这次加：
+  - `_run_dense` 加 `use_score_threshold` 开关；结果为空且设了 score_threshold 时，兜底用 `use_score_threshold=False` 再查 1 条最相关的，避免阈值太严把结果过滤到 0 条。
+- 前端：
+  - src/service/rag.ts 的 ragSearch/ragAsk 加 `score_threshold?: number` 参数。
+  - src/pages/RAG.tsx 加"最大距离"输入框（单位跟结果卡片显示的"距离"一致，不是原始相似度），换算 `score_threshold = 1 - maxDistance` 后传给后端；留空 = 不过滤。
+- 测试：用 West_China_Hospital 知识库复现用户截图的问题（top_k=5 时混进"华西医院医保服务"这种不相关结果）→ 设最大距离=0.3 → 结果从 5 条降到 3 条，不相关的被过滤；curl 测试极端阈值 0.999 确认"至少留 1 条"兜底生效。
+
+### 后续 bug：VectorDb「查询向量数据库」结果没按 distance 排序（2026-07-31 同日）
+- 根因：search_in_db 默认启用 MMR（DEFAULT_USE_MMR=True），MMR 为了多样性会把 distance 更大（更不相关）的结果排到前面，跟界面显示的原始 distance 数值对不上——这是 MMR 的设计行为，不是排序 bug，但对"查询向量数据库"这种原始检索调试面板来说是反直觉的。
+- 修复：vector_db_qdrant.py `search_api`（/ai/vector-db/search，VectorDb 详情页"查询向量数据库"抽屉用的接口）调用 search_in_db 时显式传 `use_mmr=False`，改成纯按相关度（distance 升序）排序。RAG 页面自己的检索/问答（rag.py）没动，那边保留 MMR 多样性是合理的。
+- 测试：用 drug_indicatons 库查"我今天有点腹泻"复现（rank2 distance 0.5981 排在 rank3 distance 0.5021 前面）→ 改完后 0.4506→0.5021→0.5401 严格升序，浏览器截图确认。
+
+### 后续 UI 修复：文档列表显示带时间戳前缀的文件名（2026-07-31 同日，前端 doctor-dog-web）
+- 根因：上传时为防覆盖会在文件名前加 yyyyMMdd_HHmmss_ 时间戳（service/ai/knowledge.py `_save_upload_to_kb_folder`），如果同一个文件被下载后又重新上传，会一层层叠加时间戳——查了 disney_new 库（id=21）的真实数据，`knowledge_base_document.file_name` 字段本身就已经带了一层时间戳，这次上传又加了一层，`path` 字段变成两层叠加。这是历史数据/使用方式导致的，不是本次改动引入的新问题。
+- 修复：只做前端展示层处理，不改后端存储和 file_name 字段本身。doctor-dog-web/apps/ai/src/utils/preview.ts 加 `stripTimestampPrefix()`（正则 `^(\d{8}_\d{6}_)+`，去掉开头一层或多层时间戳），在 KnowledgeBaseNew.tsx 和 KnowledgeBase.tsx 的文档列表 span/tooltip、删除确认弹窗里都换成这个函数处理后的名字；文件类型判断（usePdfPreview 等）保持用原始 file_name，不受影响。
+- 测试：浏览器打开 disney_new（id=21）文件管理页，"迪士尼产品.docx" 正常显示，前缀干净；npm run build 无 TS 错误。
+
+### 后续 RAG 质量问题：PPTX 章节分隔页（只有标题无正文）检索得分虚高（2026-07-31 同日）
+- 根因：`_documents_from_pptx` 原来每页独立成块，不管长短。像"迪士尼乐园的设施与项目"这种只有7个字的章节分隔页，因为关键词密度高（没有其他内容稀释），反而比真正的正文段落跟 query 算出更高的相似度，排到检索结果第一但没有实际信息量。
+- 修复：knowledge.py `_documents_from_pptx` 加 `_PPTX_MIN_CHUNK_CHARS = 40`，单页文本长度不够时并入下一页一起成块（同一思路的段落累积合并，DOCX 那边本来就有），category 相应变成「第N-M页」。
+- 测试：disney_new 库（id=21）「迪士尼乐园ppt课件.pptx」（document_id=320）从 25 段减到 17 段，原来独立的"迪士尼乐园的设施与项目"标题块跟下一页真实内容（"总结词\n迪士尼主题乐园是游客体验的核心..."）合并成一块；重新分段+全量向量化（1028 条）后用同一个 query「迪士尼乐园有哪些必玩项目？」重新检索，之前排第一的空标题块已不在 top-5，第一名换成真正有内容的"迪士尼乐园有哪些必玩项目.doc"。

@@ -3,7 +3,12 @@
 知识库模块：多格式资料上传、向量索引与文档管理。
 
 - 知识库 CRUD、文档与分类管理
-- 支持 PDF/DOCX/PPTX/TXT/MD 解析；分段策略为固定长度分片（chunk_size/overlap），DOCX 全文合并后分片，不保留段落/表格边界
+- 支持 PDF/DOCX/PPTX/TXT/MD 解析；分段策略 chunking_strategy 四选一：
+  - fixed（默认，兼容旧值 custom）：固定长度分片，按 chunk_size/overlap 切块
+  - structure：按标题层级切（DOCX Heading 样式 / Markdown # 层级），每段带 heading_path breadcrumb metadata
+  - hierarchy：在 structure 基础上按 hierarchy_level 生成父块，父块内再切子块并写 parent_id 关联
+  - semantic：忽略结构，对全文按 embedding 相似度做语义断句切分
+  PDF/PPTX/Excel/图片无可靠标题结构，structure/hierarchy 对这些格式会回退为 fixed；semantic 对除 PPTX 外的格式均生效
 - 分段预览：仅解析返回列表，不落库；向量化接口（最后一步）再落库并建索引
 - 向量库能力委托 service.ai.vector_db_qdrant
 """
@@ -49,13 +54,14 @@ def _knowledge_base_storage_root() -> str:
     return os.path.abspath(os.path.join(os.getcwd(), "data", "knowledge_base"))
 
 
-def _save_upload_to_kb_folder(kb_id: int, tmp_path: str, original_filename: str) -> str:
+def _save_upload_to_kb_folder(kb_name: str, tmp_path: str, original_filename: str) -> str:
     """
-    将临时文件保存到 data/knowledge_base/{kb_id}/ 下，文件名带时间戳防覆盖。
+    将临时文件保存到 data/knowledge_base/kb_{kb_name}/ 下，文件名带时间戳防覆盖。
+    kb_name 即知识库的 name 字段（已在创建时校验为 a-zA-Z0-9_-，可直接安全用作目录名）。
     返回保存后的绝对路径。
     """
     root = _knowledge_base_storage_root()
-    dir_path = os.path.join(root, str(kb_id))
+    dir_path = os.path.join(root, f"kb_{kb_name}")
     os.makedirs(dir_path, exist_ok=True)
     safe = re.sub(r"[^\w\u4e00-\u9fff\-\.]", "_", (original_filename or "file").strip()).strip("._") or "file"
     safe = safe[:120]
@@ -90,8 +96,20 @@ def vectorize_knowledge_base(knowledge_base_id: int) -> dict:
             "document_id": document_ids,
             "order_by": [{"col": "document_id", "sort": "asc"}, {"col": "index", "sort": "asc"}],
         })
+    # 父子切片：父块本身不建索引（避免和子块重复召回），只作为子块的上下文来源——
+    # 子块的 embedding 用自己的文本（检索精度），但喂给 LLM 的 text 换成父块正文（上下文更完整）
+    parent_text_by_id = {
+        s.id: (s.text or "")
+        for s in segments
+        if getattr(s, "parent_id", None) is None
+        and isinstance(getattr(s, "segment_metadata", None), dict)
+        and s.segment_metadata.get("is_parent")
+    }
     documents = []
     for seg in segments:
+        seg_meta = getattr(seg, "segment_metadata", None)
+        if isinstance(seg_meta, dict) and seg_meta.get("is_parent"):
+            continue
         file_name = doc_id_to_file_name.get(seg.document_id, "未命名")
         meta = {
             "source": "knowledge_base",
@@ -101,16 +119,21 @@ def vectorize_knowledge_base(knowledge_base_id: int) -> dict:
             "parent_id": seg.parent_id,
             "file_name": file_name,
         }
-        if getattr(seg, "segment_metadata", None) and isinstance(seg.segment_metadata, dict):
-            meta.update(seg.segment_metadata)
-        documents.append({
+        if isinstance(seg_meta, dict):
+            meta.update(seg_meta)
+        child_text = seg.text or ""
+        content_text = parent_text_by_id.get(seg.parent_id, child_text) if seg.parent_id else child_text
+        doc_entry = {
             "id": str(seg.id),
-            "text": seg.text or "",
+            "text": content_text,
             "category": file_name or f"第{seg.index}段",
             "metadata": meta,
-        })
+        }
+        if content_text != child_text:
+            doc_entry["embedding_text"] = child_text
+        documents.append(doc_entry)
     created = False
-    db_name = f"kb_{knowledge_base_id}"
+    db_name = f"vdb_{kb.name}"
     # 若已有 vector_db_id，优先增量：只对新分段调 embedding，有删除时再全量重建
     if kb.vector_db_id:
         vec_row = VectorDb.get_by_id(kb.vector_db_id)
@@ -140,7 +163,7 @@ def vectorize_knowledge_base(knowledge_base_id: int) -> dict:
         _save_documents_to_mysql(vector_db_id, documents)
         _sync_categories_from_documents(vector_db_id, documents)
     else:
-        vector_db_id = VectorDb.insert({"name": db_name, "description": None})
+        vector_db_id = VectorDb.insert({"name": db_name, "description": f"知识库{kb.name}向量库"})
         _save_documents_to_mysql(vector_db_id, documents)
         _sync_categories_from_documents(vector_db_id, documents)
     from app.app import db
@@ -185,58 +208,12 @@ def _chunk_text(text: str, chunk_size: int = 1000, chunk_overlap: int = 200) -> 
     return chunks
 
 
-def _documents_from_pdf(
-    pdf_path: str,
-    chunk_size: int = 1000,
-    chunk_overlap: int = 200,
-) -> list[dict]:
+def _merge_units_to_chunks(units: list[str], chunk_size: int, chunk_overlap: int) -> list[str]:
     """
-    从 PDF 生成文档列表：按页提取文本，每页内再按 chunk_size/overlap 分块，category 为「第N页」。
-    每项 {"id": "p{page}_c{i}", "text": str, "category": "第N页"}。
+    把顺序排列的文本单元（段落/表格/标题下的正文块）累加到接近 chunk_size 再切块，
+    只有单个单元本身超过 chunk_size 时才对其内部做定长切分。抽取自原 DOCX 分段逻辑，
+    供固定分片、结构感知、父子切片复用。
     """
-    pages = _extract_pdf_pages(pdf_path)
-    documents = []
-    for page_num, page_text in pages:
-        if not page_text:
-            continue
-        chunks = _chunk_text(page_text, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
-        category = f"第{page_num}页"
-        for i, chunk in enumerate(chunks):
-            doc_id = f"p{page_num}_c{i}" if len(chunks) > 1 else f"p{page_num}"
-            documents.append({"id": doc_id, "text": chunk, "category": category})
-    return documents
-
-
-def _documents_from_docx(
-    docx_path: str,
-    source_name: str = None,
-    chunk_size: int = 1000,
-    chunk_overlap: int = 200,
-) -> list[dict]:
-    """
-    从 DOCX 按段落/表格边界分片：相邻段落/表格累加到接近 chunk_size 再切块，
-    只有单个段落/表格本身就超过 chunk_size 时才对其内部做定长切分。
-    - category 为来源文件名（source_name）
-    - 返回 [{"id": "{source}_c{i}", "text": str, "category": str}, ...]
-    """
-    from docx import Document as DocxDocument
-    doc = DocxDocument(docx_path)
-    source = source_name or "docx"
-    units = []
-    for para in doc.paragraphs:
-        t = (para.text or "").strip()
-        if t:
-            units.append(t)
-    for table in doc.tables:
-        rows = []
-        for row in table.rows:
-            rows.append(" | ".join((c.text or "").strip() for c in row.cells))
-        t = "\n".join(rows).strip()
-        if t:
-            units.append(t)
-    if not units:
-        return []
-
     chunks: list[str] = []
     current = ""
     for unit in units:
@@ -253,11 +230,303 @@ def _documents_from_docx(
             current = unit
     if current:
         chunks.append(current)
+    return chunks
 
-    return [
-        {"id": f"{source}_c{i}", "text": c, "category": source}
-        for i, c in enumerate(chunks)
-    ]
+
+_SEMANTIC_MAX_CHARS = 30000
+_SEMANTIC_SIMILARITY_THRESHOLD = 0.6
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[。！？!?\n])")
+
+
+def _split_sentences(text: str) -> list[str]:
+    """按中英文句末标点/换行切句，用于语义切片。"""
+    parts = _SENTENCE_SPLIT_RE.split(text or "")
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    na = sum(x * x for x in a) ** 0.5
+    nb = sum(x * x for x in b) ** 0.5
+    if na == 0 or nb == 0:
+        return 0.0
+    return dot / (na * nb)
+
+
+def _semantic_chunk_text(text: str, chunk_size: int = 1000) -> list[str]:
+    """
+    语义切片：逐句调用 embedding，相邻句子相似度低于阈值处断开分组，每组累积到接近 chunk_size。
+    文本超过 _SEMANTIC_MAX_CHARS（逐句 embedding 成本过高）或句子数 <=1 时回退固定长度切片。
+    """
+    if not text or not text.strip():
+        return []
+    fallback_overlap = max(0, int(chunk_size * 0.2))
+    if len(text) > _SEMANTIC_MAX_CHARS:
+        return _chunk_text(text, chunk_size=chunk_size, chunk_overlap=fallback_overlap)
+    sentences = _split_sentences(text)
+    if len(sentences) <= 1:
+        return _chunk_text(text, chunk_size=chunk_size, chunk_overlap=fallback_overlap)
+    from service.ai.vector_db_qdrant import get_embedding
+    embeddings = []
+    for s in sentences:
+        try:
+            embeddings.append(get_embedding(s))
+        except Exception:
+            embeddings.append(None)
+    chunks: list[str] = []
+    current = ""
+    prev_emb = None
+    for sent, emb in zip(sentences, embeddings):
+        candidate = f"{current} {sent}".strip() if current else sent
+        is_boundary = (
+            prev_emb is not None and emb is not None
+            and _cosine_similarity(prev_emb, emb) < _SEMANTIC_SIMILARITY_THRESHOLD
+        )
+        if current and (is_boundary or len(candidate) > chunk_size):
+            chunks.append(current)
+            current = sent
+        else:
+            current = candidate
+        prev_emb = emb
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _chunk_text_by_strategy(text: str, chunk_size: int, chunk_overlap: int, chunking_strategy: str) -> list[str]:
+    """非结构类格式（PDF/TXT/Excel/图片）的分片入口：semantic 走语义切片，其余走固定长度。"""
+    if chunking_strategy == "semantic":
+        return _semantic_chunk_text(text, chunk_size=chunk_size)
+    return _chunk_text(text, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+
+
+_HEADING_STYLE_RE = re.compile(r"^Heading\s*(\d+)$", re.IGNORECASE)
+_MD_HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
+
+
+def _docx_units_with_headings(docx_path: str) -> list[dict]:
+    """从 DOCX 提取带标题层级的 units：[{"text","level","is_heading"}]，level 0 为 Title，1/2/3.. 对应 Heading 1/2/3。"""
+    from docx import Document as DocxDocument
+    doc = DocxDocument(docx_path)
+    units: list[dict] = []
+    for para in doc.paragraphs:
+        t = (para.text or "").strip()
+        if not t:
+            continue
+        style_name = (para.style.name if para.style else "") or ""
+        m = _HEADING_STYLE_RE.match(style_name.strip())
+        if m:
+            units.append({"text": t, "level": int(m.group(1)), "is_heading": True})
+        elif style_name.strip().lower() == "title":
+            units.append({"text": t, "level": 0, "is_heading": True})
+        else:
+            units.append({"text": t, "level": None, "is_heading": False})
+    for table in doc.tables:
+        rows = []
+        for row in table.rows:
+            rows.append(" | ".join((c.text or "").strip() for c in row.cells))
+        t = "\n".join(rows).strip()
+        if t:
+            units.append({"text": t, "level": None, "is_heading": False})
+    return units
+
+
+def _md_units_with_headings(text: str) -> list[dict]:
+    """从 Markdown 提取带标题层级的 units：按空行分块，块只有一行且是 #.. 开头时视为 heading。"""
+    blocks = [b.strip() for b in re.split(r"\n\s*\n", text or "") if b.strip()]
+    units: list[dict] = []
+    for block in blocks:
+        lines = block.splitlines()
+        m = _MD_HEADING_RE.match(lines[0].strip()) if lines else None
+        if m and len(lines) == 1:
+            units.append({"text": m.group(2).strip(), "level": len(m.group(1)), "is_heading": True})
+        else:
+            units.append({"text": block, "level": None, "is_heading": False})
+    return units
+
+
+def _build_heading_sections(units: list[dict]) -> list[dict]:
+    """
+    把带 level/is_heading 的 units 组装成扁平 section 列表：
+    [{"heading_path": [(level, title), ...], "text": str}, ...]
+    text 为该标题下、下一个同级或更高级标题前的正文（不含子标题自身的正文，子标题另起一条 section）。
+    无标题的前导正文对应 heading_path 为空列表。
+    """
+    sections: list[dict] = []
+    stack: list[tuple[int, str]] = []
+    current_body: list[str] = []
+
+    def _flush():
+        if current_body:
+            sections.append({"heading_path": list(stack), "text": "\n\n".join(current_body).strip()})
+            current_body.clear()
+
+    for u in units:
+        if u["is_heading"]:
+            _flush()
+            level = u["level"]
+            while stack and stack[-1][0] >= level:
+                stack.pop()
+            stack.append((level, u["text"]))
+        else:
+            current_body.append(u["text"])
+    _flush()
+    return sections
+
+
+def _sections_to_documents(
+    sections: list[dict],
+    source: str,
+    chunk_size: int,
+    chunk_overlap: int,
+    id_prefix: str | None = None,
+) -> list[dict]:
+    """结构感知切片：每个 heading section 独立成块（超长按 chunk_size 再切），metadata 带 heading_path breadcrumb。"""
+    prefix = id_prefix or source
+    documents: list[dict] = []
+    for sec in sections:
+        if not sec["text"]:
+            continue
+        breadcrumb = [title for _, title in sec["heading_path"]]
+        meta = {"heading_path": breadcrumb, "heading": breadcrumb[-1] if breadcrumb else None}
+        for part in _merge_units_to_chunks([sec["text"]], chunk_size=chunk_size, chunk_overlap=chunk_overlap):
+            documents.append({"text": part, "category": source, "metadata": dict(meta)})
+    return [{"id": f"{prefix}_c{i}", **d} for i, d in enumerate(documents)]
+
+
+def _group_sections_for_hierarchy(sections: list[dict], hierarchy_level: int) -> list[dict]:
+    """按 hierarchy_level 把连续 section 分组为父块（heading_path 中 level<=hierarchy_level 的标题前缀相同即同一父块）。"""
+    groups: list[dict] = []
+    last_key = None
+    for sec in sections:
+        key = tuple(title for level, title in sec["heading_path"] if level is not None and level <= hierarchy_level)
+        if not groups or key != last_key:
+            groups.append({"key": key, "sections": []})
+            last_key = key
+        groups[-1]["sections"].append(sec)
+    return groups
+
+
+def _documents_from_heading_units(
+    units: list[dict],
+    source: str,
+    chunk_size: int,
+    chunk_overlap: int,
+    chunking_strategy: str,
+    hierarchy_level: int = 3,
+    retain_hierarchy: bool = True,
+) -> list[dict]:
+    """结构感知（structure）/ 父子切片（hierarchy）的统一入口，输入为 _docx_units_with_headings / _md_units_with_headings 的输出。"""
+    sections = _build_heading_sections(units)
+    if not sections:
+        return []
+    if chunking_strategy != "hierarchy":
+        return _sections_to_documents(sections, source=source, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+
+    documents: list[dict] = []
+    for parent_idx, group in enumerate(_group_sections_for_hierarchy(sections, hierarchy_level)):
+        parts = []
+        for sec in group["sections"]:
+            if sec["heading_path"]:
+                parts.append(sec["heading_path"][-1][1])
+            if sec["text"]:
+                parts.append(sec["text"])
+        parent_text = "\n\n".join(parts).strip()
+        if not parent_text:
+            continue
+        breadcrumb = list(group["key"])
+        parent_local_ref = f"{source}_hp{parent_idx}"
+        documents.append({
+            "id": f"{source}_p{parent_idx}",
+            "text": parent_text,
+            "category": source,
+            "metadata": {"is_parent": True, "heading_path": breadcrumb},
+            "_local_parent_ref": parent_local_ref,
+        })
+        child_docs = _sections_to_documents(
+            group["sections"], source=source, chunk_size=chunk_size, chunk_overlap=chunk_overlap,
+            id_prefix=f"{source}_p{parent_idx}_c",
+        )
+        for cd in child_docs:
+            meta = cd.get("metadata") or {}
+            if not retain_hierarchy:
+                meta = {k: v for k, v in meta.items() if k not in ("heading_path", "heading")}
+            cd["metadata"] = meta
+            cd["_local_parent_ref"] = parent_local_ref
+            documents.append(cd)
+    return documents
+
+
+def _documents_from_pdf(
+    pdf_path: str,
+    chunk_size: int = 1000,
+    chunk_overlap: int = 200,
+    chunking_strategy: str = "fixed",
+) -> list[dict]:
+    """
+    从 PDF 生成文档列表：按页提取文本，每页内再按 chunk_size/overlap（或 semantic 语义切片）分块，category 为「第N页」。
+    PDF 无可靠标题结构，structure/hierarchy 策略在此回退为固定长度。
+    每项 {"id": "p{page}_c{i}", "text": str, "category": "第N页"}。
+    """
+    pages = _extract_pdf_pages(pdf_path)
+    documents = []
+    for page_num, page_text in pages:
+        if not page_text:
+            continue
+        chunks = _chunk_text_by_strategy(page_text, chunk_size, chunk_overlap, chunking_strategy)
+        category = f"第{page_num}页"
+        for i, chunk in enumerate(chunks):
+            doc_id = f"p{page_num}_c{i}" if len(chunks) > 1 else f"p{page_num}"
+            documents.append({"id": doc_id, "text": chunk, "category": category})
+    return documents
+
+
+def _documents_from_docx(
+    docx_path: str,
+    source_name: str = None,
+    chunk_size: int = 1000,
+    chunk_overlap: int = 200,
+    chunking_strategy: str = "fixed",
+    hierarchy_level: int = 3,
+    retain_hierarchy: bool = True,
+) -> list[dict]:
+    """
+    从 DOCX 生成分段文档，按 chunking_strategy 分派：
+    - fixed/custom（默认）：段落/表格边界累加到接近 chunk_size 再切块（原有行为，不保留标题层级）
+    - structure：按 Heading 1/2/.. 标题层级切，每段带 heading_path breadcrumb metadata
+    - hierarchy：在 structure 基础上按 hierarchy_level 生成父块，父块内再切子块（parent_id 关联在
+      _add_document_and_segments_to_kb 中通过 _local_parent_ref 解析为真实 segment id）
+    - semantic：忽略标题结构，对全文按语义相似度切分
+    category 为来源文件名（source_name）。
+    """
+    source = source_name or "docx"
+    if chunking_strategy in ("structure", "hierarchy"):
+        units = _docx_units_with_headings(docx_path)
+        return _documents_from_heading_units(
+            units, source=source, chunk_size=chunk_size, chunk_overlap=chunk_overlap,
+            chunking_strategy=chunking_strategy, hierarchy_level=hierarchy_level, retain_hierarchy=retain_hierarchy,
+        )
+    from docx import Document as DocxDocument
+    doc = DocxDocument(docx_path)
+    units: list[str] = []
+    for para in doc.paragraphs:
+        t = (para.text or "").strip()
+        if t:
+            units.append(t)
+    for table in doc.tables:
+        rows = []
+        for row in table.rows:
+            rows.append(" | ".join((c.text or "").strip() for c in row.cells))
+        t = "\n".join(rows).strip()
+        if t:
+            units.append(t)
+    if not units:
+        return []
+    if chunking_strategy == "semantic":
+        chunks = _semantic_chunk_text("\n\n".join(units), chunk_size=chunk_size)
+    else:
+        chunks = _merge_units_to_chunks(units, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+    return [{"id": f"{source}_c{i}", "text": c, "category": source} for i, c in enumerate(chunks)]
 
 
 def _ocr_image_to_text(image_path: str) -> str | None:
@@ -298,13 +567,14 @@ def _documents_from_image(
     source_name: str = None,
     chunk_size: int = 1000,
     chunk_overlap: int = 200,
+    chunking_strategy: str = "fixed",
 ) -> list[dict]:
-    """从图片 OCR 提取文本后按块切分。无文字时返回空列表。"""
+    """从图片 OCR 提取文本后按块切分（semantic 走语义切片）。无文字时返回空列表。"""
     text = _ocr_image_to_text(image_path)
     if not text:
         return []
     source = source_name or "image"
-    chunks = _chunk_text(text, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+    chunks = _chunk_text_by_strategy(text, chunk_size, chunk_overlap, chunking_strategy)
     return [
         {"id": f"{source}_c{i}", "text": c, "category": source}
         for i, c in enumerate(chunks)
@@ -316,24 +586,53 @@ def _documents_from_txt(
     source_name: str = None,
     chunk_size: int = 1000,
     chunk_overlap: int = 200,
+    chunking_strategy: str = "fixed",
 ) -> list[dict]:
-    """从 TXT/MD 按块切分，category 为文件名。"""
+    """从 TXT/MD 按块切分（semantic 走语义切片），category 为文件名。"""
     with open(txt_path, "r", encoding="utf-8", errors="ignore") as f:
         text = f.read()
     source = source_name or "txt"
-    chunks = _chunk_text(text, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+    chunks = _chunk_text_by_strategy(text, chunk_size, chunk_overlap, chunking_strategy)
     return [
         {"id": f"{source}_c{i}", "text": c, "category": source}
         for i, c in enumerate(chunks)
     ]
 
 
+def _documents_from_md_structured(
+    txt_path: str,
+    source_name: str = None,
+    chunk_size: int = 1000,
+    chunk_overlap: int = 200,
+    chunking_strategy: str = "structure",
+    hierarchy_level: int = 3,
+    retain_hierarchy: bool = True,
+) -> list[dict]:
+    """Markdown 按 # 标题层级切分（structure/hierarchy），category 为文件名。"""
+    with open(txt_path, "r", encoding="utf-8", errors="ignore") as f:
+        text = f.read()
+    source = source_name or "md"
+    units = _md_units_with_headings(text)
+    return _documents_from_heading_units(
+        units, source=source, chunk_size=chunk_size, chunk_overlap=chunk_overlap,
+        chunking_strategy=chunking_strategy, hierarchy_level=hierarchy_level, retain_hierarchy=retain_hierarchy,
+    )
+
+
+_PPTX_MIN_CHUNK_CHARS = 40
+
+
 def _documents_from_pptx(pptx_path: str, source_name: str = None) -> list[dict]:
-    """从 PPTX 按页（幻灯片）提取文本，每页内所有形状文本合并为一条，category 为「第N页」。"""
+    """
+    从 PPTX 按页（幻灯片）提取文本；单页文本过短（如目录/章节分隔页，通常只有标题没有正文）时
+    并入下一页一起成块，避免这类短文本因关键词密度高，在向量检索中获得虚高的相关度分数却没有实际内容。
+    category 为「第N页」，合并多页时为「第N-M页」。
+    """
     from pptx import Presentation
     prs = Presentation(pptx_path)
     source = source_name or "pptx"
-    documents = []
+
+    slides_text: list[tuple[int, str]] = []
     for slide_num, slide in enumerate(prs.slides, start=1):
         parts = []
         for shape in slide.shapes:
@@ -344,11 +643,29 @@ def _documents_from_pptx(pptx_path: str, source_name: str = None) -> list[dict]:
                 if t:
                     parts.append(t)
         text = "\n".join(parts)
-        if not text:
-            continue
-        category = f"第{slide_num}页"
-        doc_id = f"{source}_s{slide_num}"
-        documents.append({"id": doc_id, "text": text, "category": category})
+        if text:
+            slides_text.append((slide_num, text))
+
+    blocks: list[tuple[list[int], str]] = []
+    pages: list[int] = []
+    text_acc = ""
+    for slide_num, text in slides_text:
+        pages.append(slide_num)
+        text_acc = f"{text_acc}\n{text}" if text_acc else text
+        if len(text_acc) >= _PPTX_MIN_CHUNK_CHARS:
+            blocks.append((pages, text_acc))
+            pages, text_acc = [], ""
+    if text_acc:
+        if blocks:
+            prev_pages, prev_text = blocks[-1]
+            blocks[-1] = (prev_pages + pages, f"{prev_text}\n{text_acc}")
+        else:
+            blocks.append((pages, text_acc))
+
+    documents = []
+    for pages, text in blocks:
+        category = f"第{pages[0]}页" if len(pages) == 1 else f"第{pages[0]}-{pages[-1]}页"
+        documents.append({"id": f"{source}_s{pages[0]}", "text": text, "category": category})
     return documents
 
 
@@ -357,8 +674,9 @@ def _documents_from_excel(
     source_name: str = None,
     chunk_size: int = 1000,
     chunk_overlap: int = 200,
+    chunking_strategy: str = "fixed",
 ) -> list[dict]:
-    """从 Excel（.xlsx 或 .xls）提取文本：每个工作表按行提取，表格数据转为文本后分块。"""
+    """从 Excel（.xlsx 或 .xls）提取文本：每个工作表按行提取，表格数据转为文本后分块（semantic 走语义切片）。"""
     import os
     ext = os.path.splitext(excel_path)[1].lower()
     source = source_name or "excel"
@@ -379,7 +697,7 @@ def _documents_from_excel(
                     if rows_text:
                         full_text = "\n".join(rows_text)
                         category = f"工作表: {sheet_name}"
-                        chunks = _chunk_text(full_text, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+                        chunks = _chunk_text_by_strategy(full_text, chunk_size, chunk_overlap, chunking_strategy)
                         for i, chunk in enumerate(chunks):
                             doc_id = f"{source}_{sheet_name}_c{i}"
                             documents.append({"id": doc_id, "text": chunk, "category": category})
@@ -399,7 +717,7 @@ def _documents_from_excel(
                     if rows_text:
                         full_text = "\n".join(rows_text)
                         category = f"工作表: {sheet.name}"
-                        chunks = _chunk_text(full_text, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+                        chunks = _chunk_text_by_strategy(full_text, chunk_size, chunk_overlap, chunking_strategy)
                         for i, chunk in enumerate(chunks):
                             doc_id = f"{source}_{sheet.name}_c{i}"
                             documents.append({"id": doc_id, "text": chunk, "category": category})
@@ -415,15 +733,20 @@ def parse_file_to_documents(
     filename: str,
     chunk_size: int = 1000,
     chunk_overlap: int = 200,
+    chunking_strategy: str = "fixed",
+    hierarchy_level: int = 3,
+    retain_hierarchy: bool = True,
 ) -> list[dict]:
     """
-    按扩展名解析文件为分段列表（固定长度分片）。
+    按扩展名解析文件为分段列表。chunking_strategy: fixed（默认，兼容旧值 custom）/ structure（标题层级，
+    DOCX/MD 有效）/ hierarchy（父子切片，DOCX/MD 有效）/ semantic（语义切片，除 PPTX 外均有效）。
+    PDF/PPTX/Excel/图片无可靠标题结构，structure/hierarchy 对这些格式回退为 fixed。
     支持 .pdf / .docx / .pptx / .txt / .md。
-    每项 {"id": str, "text": str, "category": str}。
+    每项 {"id": str, "text": str, "category": str, "metadata"?: dict}。
     """
     fn = (filename or "").lower()
     if fn.endswith(".pdf"):
-        return _documents_from_pdf(file_path, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+        return _documents_from_pdf(file_path, chunk_size=chunk_size, chunk_overlap=chunk_overlap, chunking_strategy=chunking_strategy)
     if fn.endswith(".doc"):
         # 用 LibreOffice 将 .doc 转为 .docx 后解析
         tmp_dir = tempfile.mkdtemp(prefix="kb_doc_")
@@ -435,6 +758,9 @@ def parse_file_to_documents(
                     source_name=filename,
                     chunk_size=chunk_size,
                     chunk_overlap=chunk_overlap,
+                    chunking_strategy=chunking_strategy,
+                    hierarchy_level=hierarchy_level,
+                    retain_hierarchy=retain_hierarchy,
                 )
                 return out
         finally:
@@ -457,6 +783,9 @@ def parse_file_to_documents(
             source_name=filename,
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
+            chunking_strategy=chunking_strategy,
+            hierarchy_level=hierarchy_level,
+            retain_hierarchy=retain_hierarchy,
         )
     if fn.endswith(".ppt"):
         # 用 LibreOffice 将 .ppt 转为 .pptx 后解析
@@ -482,14 +811,20 @@ def parse_file_to_documents(
         )
     if fn.endswith(".pptx"):
         return _documents_from_pptx(file_path, source_name=filename)
+    if fn.endswith(".md") and chunking_strategy in ("structure", "hierarchy"):
+        return _documents_from_md_structured(
+            file_path, source_name=filename, chunk_size=chunk_size, chunk_overlap=chunk_overlap,
+            chunking_strategy=chunking_strategy, hierarchy_level=hierarchy_level, retain_hierarchy=retain_hierarchy,
+        )
     if fn.endswith(".txt") or fn.endswith(".md"):
-        return _documents_from_txt(file_path, source_name=filename, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+        return _documents_from_txt(file_path, source_name=filename, chunk_size=chunk_size, chunk_overlap=chunk_overlap, chunking_strategy=chunking_strategy)
     if fn.endswith((".xlsx", ".xls")):
         return _documents_from_excel(
             file_path,
             source_name=filename,
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
+            chunking_strategy=chunking_strategy,
         )
     if fn.endswith((".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")):
         # 免费 OCR（Tesseract）：有则分段，无则仍保存文件、分段数为 0
@@ -500,6 +835,7 @@ def parse_file_to_documents(
             source_name=filename,
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
+            chunking_strategy=chunking_strategy,
         )
         if not docs:
             raise ValueError(
@@ -518,6 +854,8 @@ def _add_document_and_segments_to_kb(
 ) -> dict:
     """
     向知识库写入一条文档记录与分段（knowledge_base_document + knowledge_base_segment）。
+    documents 若带 `_local_parent_ref`（hierarchy 父子切片产生）：父块（metadata.is_parent 为 True）先插入
+    拿到真实 id，后续携带相同 _local_parent_ref 的子块引用该 id 写入 parent_id（依赖 documents 中父块排在其子块之前）。
     返回 {"document_id": int, "segment_count": int}。不操作向量库，需另调 vectorize_knowledge_base。
     """
     from model.ai import KnowledgeBase, KnowledgeBaseDocument, KnowledgeBaseSegment
@@ -531,16 +869,24 @@ def _add_document_and_segments_to_kb(
         "file_id": file_id,
         "status": "segmented",
     })
-    for i, doc in enumerate(documents):
+    parent_ref_to_real_id: dict[str, int] = {}
+    index = 0
+    for doc in documents:
         text = (doc.get("text") or doc.get("content") or "").strip()
         if not text:
             continue
         meta = doc.get("metadata") if isinstance(doc.get("metadata"), dict) else None
-        seg_row = {"document_id": doc_id, "text": text, "index": i, "parent_id": None}
+        local_ref = doc.get("_local_parent_ref")
+        is_parent = bool(meta and meta.get("is_parent"))
+        parent_id = parent_ref_to_real_id.get(local_ref) if (local_ref is not None and not is_parent) else None
+        seg_row = {"document_id": doc_id, "text": text, "index": index, "parent_id": parent_id}
         if meta is not None:
             seg_row["segment_metadata"] = meta
-        KnowledgeBaseSegment.insert(seg_row)
-    return {"document_id": doc_id, "segment_count": len([d for d in documents if (d.get("text") or d.get("content") or "").strip()])}
+        seg_id = KnowledgeBaseSegment.insert(seg_row)
+        if local_ref is not None and is_parent:
+            parent_ref_to_real_id[local_ref] = seg_id
+        index += 1
+    return {"document_id": doc_id, "segment_count": index}
 
 
 def append_documents_to_kb(db_id: int, documents: list[dict]) -> dict:
@@ -705,7 +1051,7 @@ def create_knowledge_base_from_pdf_api(request: Request):
             raise ValueError("PDF 中未提取到有效文本")
         kb_id = KnowledgeBase.insert({"name": name, "description": description, "parsing_strategy": "fast", "chunking_strategy": "custom"})
         fn = (f.filename or "").strip() or "file.pdf"
-        saved_path = _save_upload_to_kb_folder(kb_id, tmp_path, fn)
+        saved_path = _save_upload_to_kb_folder(name, tmp_path, fn)
         _add_document_and_segments_to_kb(kb_id, fn, documents, path=saved_path)
         vec = vectorize_knowledge_base(kb_id)
         kb = KnowledgeBase.get_by_id(kb_id)
@@ -766,7 +1112,14 @@ def preview_segments_from_db_api(request: Request):
     return ({"code": 0, "msg": "ok", "data": {"documents": documents_out}})
 
 
-def _resegment_one_document(document_id: int, chunk_size: int, chunk_overlap: int) -> int:
+def _resegment_one_document(
+    document_id: int,
+    chunk_size: int,
+    chunk_overlap: int,
+    chunking_strategy: str = "fixed",
+    hierarchy_level: int = 3,
+    retain_hierarchy: bool = True,
+) -> int:
     """对单个文档按 path 重新解析并替换分段，返回新分段数量。"""
     from model.ai import KnowledgeBaseDocument, KnowledgeBaseSegment
     doc = KnowledgeBaseDocument.get_by_id(document_id)
@@ -776,29 +1129,65 @@ def _resegment_one_document(document_id: int, chunk_size: int, chunk_overlap: in
     if not path or not os.path.isfile(path):
         raise FileNotFoundError(f"文档文件路径无效或已丢失: document_id={document_id}")
     fn = (doc.file_name or "").strip() or "file"
-    documents = parse_file_to_documents(path, fn, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+    documents = parse_file_to_documents(
+        path, fn, chunk_size=chunk_size, chunk_overlap=chunk_overlap,
+        chunking_strategy=chunking_strategy, hierarchy_level=hierarchy_level, retain_hierarchy=retain_hierarchy,
+    )
     if not documents:
         return 0
     KnowledgeBaseSegment.force_delete({"document_id": document_id})
-    for i, d in enumerate(documents):
+    parent_ref_to_real_id: dict[str, int] = {}
+    index = 0
+    for d in documents:
         text = (d.get("text") or d.get("content") or "").strip()
         if not text:
             continue
         meta = d.get("metadata") if isinstance(d.get("metadata"), dict) else None
-        seg_row = {"document_id": document_id, "text": text, "index": i, "parent_id": None}
+        local_ref = d.get("_local_parent_ref")
+        is_parent = bool(meta and meta.get("is_parent"))
+        parent_id = parent_ref_to_real_id.get(local_ref) if (local_ref is not None and not is_parent) else None
+        seg_row = {"document_id": document_id, "text": text, "index": index, "parent_id": parent_id}
         if meta is not None:
             seg_row["segment_metadata"] = meta
-        KnowledgeBaseSegment.insert(seg_row)
-    return len([d for d in documents if (d.get("text") or d.get("content") or "").strip()])
+        seg_id = KnowledgeBaseSegment.insert(seg_row)
+        if local_ref is not None and is_parent:
+            parent_ref_to_real_id[local_ref] = seg_id
+        index += 1
+    return index
+
+
+_CHUNKING_STRATEGIES = ("fixed", "custom", "structure", "hierarchy", "semantic")
+
+
+def _parse_chunking_strategy_params(data: dict) -> tuple[str, int, bool]:
+    """从请求体解析 chunking_strategy/hierarchy_level/retain_hierarchy，带校验与默认值。"""
+    chunking_strategy = (data.get("chunking_strategy") or "fixed").strip()
+    if chunking_strategy not in _CHUNKING_STRATEGIES:
+        raise ValueError(f"chunking_strategy 仅支持 {'/'.join(_CHUNKING_STRATEGIES)}")
+    try:
+        hierarchy_level = int(data.get("hierarchy_level") or "3")
+    except (TypeError, ValueError):
+        hierarchy_level = 3
+    hierarchy_level = max(1, min(6, hierarchy_level))
+    retain_hierarchy = data.get("retain_hierarchy")
+    if retain_hierarchy is None:
+        retain_hierarchy = True
+    elif isinstance(retain_hierarchy, str):
+        retain_hierarchy = retain_hierarchy.strip().lower() not in ("0", "false", "no")
+    else:
+        retain_hierarchy = bool(retain_hierarchy)
+    return chunking_strategy, hierarchy_level, retain_hierarchy
 
 
 def execute_segments_api(request: Request):
     """
-    执行分段并落库（不向量化）。使用文档列表 + 分层参数（分段长度、分段重叠）。
+    执行分段并落库（不向量化）。使用文档列表 + 分层参数（分段长度、分段重叠、分段策略）。
     两种用法：
-    1）对已入库文档列表批量重新分段：body 传 document_ids（数组）+ 分段长度 chunk_size + 分段重叠 chunk_overlap，对每个文档按 path 重新解析并替换分段。
-    2）对已上传文件执行分段并加入知识库：body 传 kb_id + file_id + file_name + 可选 chunk_size/chunk_overlap。
-    POST body: JSON，如 { "document_ids": [1, 2], "chunk_size": 1000, "chunk_overlap": 200 }
+    1）对已入库文档列表批量重新分段：body 传 document_ids（数组）+ chunk_size/chunk_overlap +
+       可选 chunking_strategy（fixed/structure/hierarchy/semantic，默认 fixed）/hierarchy_level/retain_hierarchy，
+       对每个文档按 path 重新解析并替换分段。
+    2）对已上传文件执行分段并加入知识库：body 传 kb_id + file_id + file_name + 同上可选参数。
+    POST body: JSON，如 { "document_ids": [1, 2], "chunk_size": 1000, "chunk_overlap": 200, "chunking_strategy": "structure" }
     """
     from model.ai import KnowledgeBaseDocument, KnowledgeBaseSegment
     data = anyio.from_thread.run(read_json_or_form_fields, request) or {}
@@ -813,6 +1202,7 @@ def execute_segments_api(request: Request):
         chunk_size, chunk_overlap = 1000, 200
     chunk_size = max(100, min(4000, chunk_size))
     chunk_overlap = max(0, min(chunk_size - 1, chunk_overlap))
+    chunking_strategy, hierarchy_level, retain_hierarchy = _parse_chunking_strategy_params(data)
 
     if document_ids is not None:
         # 文档列表 + 分层参数：批量重新分段
@@ -829,7 +1219,10 @@ def execute_segments_api(request: Request):
         results = []
         for did in doc_ids:
             try:
-                cnt = _resegment_one_document(did, chunk_size, chunk_overlap)
+                cnt = _resegment_one_document(
+                    did, chunk_size, chunk_overlap,
+                    chunking_strategy=chunking_strategy, hierarchy_level=hierarchy_level, retain_hierarchy=retain_hierarchy,
+                )
                 results.append({"document_id": did, "segment_count": cnt})
             except FileNotFoundError as e:
                 results.append({"document_id": did, "segment_count": 0, "error": str(e)})
@@ -840,6 +1233,7 @@ def execute_segments_api(request: Request):
                 "results": results,
                 "chunk_size": chunk_size,
                 "chunk_overlap": chunk_overlap,
+                "chunking_strategy": chunking_strategy,
             },
         })
 
@@ -853,7 +1247,10 @@ def execute_segments_api(request: Request):
         file_path = get_file_path(file_id)
         if not file_path or not os.path.isfile(file_path):
             raise FileNotFoundError("文件不存在或已丢失，请先上传文件")
-        documents = parse_file_to_documents(file_path, file_name, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+        documents = parse_file_to_documents(
+            file_path, file_name, chunk_size=chunk_size, chunk_overlap=chunk_overlap,
+            chunking_strategy=chunking_strategy, hierarchy_level=hierarchy_level, retain_hierarchy=retain_hierarchy,
+        )
         if not documents:
             raise ValueError("文件中未解析出有效内容")
         out = _add_document_and_segments_to_kb(kb_id, file_name, documents, file_id=file_id, path=file_path)
@@ -868,10 +1265,11 @@ def execute_segments_api(request: Request):
 
 def upload_knowledge_base_api(request: Request):
     """
-    知识库上传资料：仅保存文件到项目目录 data/knowledge_base/{kb_id}/ 并写入
+    知识库上传资料：仅保存文件到项目目录 data/knowledge_base/kb_{知识库name}/ 并写入
     knowledge_base_document + knowledge_base_segment，不自动向量化；需要检索时再调 POST /ai/knowledge-base/vectorize。
     支持 PDF/DOCX/TXT/MD。可一次传多个 file（多选），或单个 file。可追加到已有知识库（kb_id/kb_name）或新建知识库（name）。
-    POST multipart/form-data: file 或 file[]（可多个）, name 或 kb_id/kb_name, description/chunk_size/chunk_overlap 可选。
+    POST multipart/form-data: file 或 file[]（可多个）, name 或 kb_id/kb_name,
+    description/chunk_size/chunk_overlap/chunking_strategy/hierarchy_level/retain_hierarchy 可选。
     """
     import tempfile
     from sqlalchemy.exc import IntegrityError
@@ -929,6 +1327,7 @@ def upload_knowledge_base_api(request: Request):
         chunk_size, chunk_overlap = 1000, 200
     chunk_size = max(100, min(4000, chunk_size))
     chunk_overlap = max(0, min(chunk_size - 1, chunk_overlap))
+    chunking_strategy, hierarchy_level, retain_hierarchy = _parse_chunking_strategy_params(form)
     tmp_paths = []
     try:
         if kb_id is None:
@@ -972,7 +1371,7 @@ def upload_knowledge_base_api(request: Request):
                     tmp_paths.append(tmp_path)
                     anyio.from_thread.run(write_upload_to_disk, f, tmp_path)
                 # 先保存文件到知识库文件夹，即使解析失败也要保存
-                saved_path = _save_upload_to_kb_folder(kb_id, tmp_path, fn)
+                saved_path = _save_upload_to_kb_folder(kb.name, tmp_path, fn)
                 # 更新已存在列表，避免同批次重复
                 if fn_normalized in existing_docs_map:
                     del existing_docs_map[fn_normalized]
@@ -992,7 +1391,10 @@ def upload_knowledge_base_api(request: Request):
                     continue
                 # 尝试解析文件
                 try:
-                    documents = parse_file_to_documents(tmp_path, fn, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+                    documents = parse_file_to_documents(
+                    tmp_path, fn, chunk_size=chunk_size, chunk_overlap=chunk_overlap,
+                    chunking_strategy=chunking_strategy, hierarchy_level=hierarchy_level, retain_hierarchy=retain_hierarchy,
+                )
                 except Exception as parse_err:
                     # 解析失败但文件已保存，创建文档记录（无分段）
                     out = _add_document_and_segments_to_kb(kb_id, fn, [], path=saved_path)

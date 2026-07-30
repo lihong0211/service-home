@@ -190,6 +190,9 @@ def _normalize_documents(documents: list[dict]) -> list[dict]:
         item: dict[str, Any] = {"id": doc_id, "text": text, "category": category}
         if "metadata" in doc and doc["metadata"] is not None:
             item["metadata"] = doc["metadata"] if isinstance(doc["metadata"], dict) else {}
+        if doc.get("embedding_text"):
+            # 父子切片：embedding 用子块原文（检索精度），text 用父块正文（喂给 LLM 的上下文）
+            item["embedding_text"] = str(doc["embedding_text"]).strip()
         normalized.append(item)
     return normalized
 
@@ -204,7 +207,7 @@ def _upsert_points(db_name: str, docs: list[dict], batch_size: int = 64) -> int:
     total = 0
     batch: list[PointStruct] = []
     for doc in docs:
-        vec = get_embedding(doc["text"])
+        vec = get_embedding(doc.get("embedding_text") or doc["text"])
         payload: dict[str, Any] = {
             "doc_id": str(doc["id"]),
             "text": doc["text"],
@@ -330,8 +333,9 @@ def search_in_db(
     q_filter = Filter(must=must) if must else None
     query_vec = get_embedding(query)
 
-    def _run_dense(limit: int, with_vectors: bool = False):
+    def _run_dense(limit: int, with_vectors: bool = False, use_score_threshold: bool = True):
         # qdrant-client >= 1.17 移除 search，统一走 query_points；旧版仍可能仅有 search
+        threshold = score_threshold if use_score_threshold else None
         if hasattr(client, "query_points"):
             qresp = client.query_points(
                 collection_name=collection,
@@ -340,7 +344,7 @@ def search_in_db(
                 with_payload=True,
                 with_vectors=with_vectors,
                 query_filter=q_filter,
-                score_threshold=score_threshold,
+                score_threshold=threshold,
             )
             return getattr(qresp, "points", None) or []
         return (
@@ -351,7 +355,7 @@ def search_in_db(
                 with_payload=True,
                 with_vectors=with_vectors,
                 query_filter=q_filter,
-                score_threshold=score_threshold,
+                score_threshold=threshold,
             )
             or []
         )
@@ -499,6 +503,21 @@ def search_in_db(
                 "rank": len(results) + 1,
             }
         )
+
+    if not results and score_threshold is not None:
+        # score_threshold 把所有候选都过滤掉了：兜底返回最相关的 1 条，避免检索结果直接变空
+        fallback_hits = _run_dense(1, use_score_threshold=False)
+        if fallback_hits:
+            h = fallback_hits[0]
+            score = _hit_score(h)
+            results.append(
+                {
+                    "doc": _payload_to_doc(h),
+                    "score": score,
+                    "distance": max(0.0, 1.0 - score),
+                    "rank": 1,
+                }
+            )
     return results
 
 
@@ -1115,6 +1134,10 @@ def list_api(request: Request):
 
 
 def create_api(request: Request):
+    """
+    新建向量库：库的实际存储名（VectorDb.name / Qdrant collection / 磁盘目录）统一为 vdb_{name}，
+    name 为用户填写的向量库名称本身。
+    """
     from model.ai import VectorDb
 
     data = anyio.from_thread.run(read_json_optional, request) or {}
@@ -1125,11 +1148,12 @@ def create_api(request: Request):
         raise ValueError("库名仅允许 a-zA-Z0-9_-")
     documents = data.get("documents") if data.get("documents") is not None else []
     description = (data.get("description") or "").strip() or None
-    if VectorDb.select_one_by({"name": name}):
+    db_name = f"vdb_{name}"
+    if VectorDb.select_one_by({"name": db_name}):
         raise ValueError(f"库名已存在: {name}")
-    row_id = VectorDb.insert({"name": name, "description": description})
+    row_id = VectorDb.insert({"name": db_name, "description": description})
     try:
-        out = create_vector_db(name, documents)
+        out = create_vector_db(db_name, documents)
         docs = out.get("documents") or []
         _save_documents_to_mysql(row_id, docs)
         if docs:
@@ -1139,7 +1163,7 @@ def create_api(request: Request):
             "msg": "ok",
             "data": {
                 "id": row_id,
-                "name": name,
+                "name": db_name,
                 "description": description,
                 "count": out["count"],
                 "path": out["path"],
@@ -1148,7 +1172,7 @@ def create_api(request: Request):
         }
     except Exception as e_vec:
         VectorDb.force_delete({"id": row_id})
-        _delete_vector_db_from_disk(name)
+        _delete_vector_db_from_disk(db_name)
         raise e_vec
 
 
@@ -1503,5 +1527,7 @@ def search_api(request: Request):
     category = data.get("category")
     metadata = data.get("metadata")
     metadata = metadata if isinstance(metadata, dict) else None
-    results = search_in_db(db_name, query, top_k=top_k, category=category, metadata_filter=metadata)
+    # 这是原始向量检索的调试/查看入口，禁用 MMR：按纯相关度（distance 升序）排序，
+    # 避免 MMR 为了多样性把 distance 更大（更不相关）的结果排到前面，跟界面上显示的 distance 数值对不上
+    results = search_in_db(db_name, query, top_k=top_k, category=category, metadata_filter=metadata, use_mmr=False)
     return {"code": 0, "msg": "ok", "data": {"results": results}}
