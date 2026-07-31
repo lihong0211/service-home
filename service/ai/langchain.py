@@ -18,7 +18,7 @@ import operator
 import os
 import time
 from datetime import datetime
-from typing import Annotated, TypedDict
+from typing import Annotated, Literal, TypedDict
 
 import dashscope
 import requests
@@ -33,6 +33,7 @@ from config.ai import DEFAULT_CHAT_MODEL
 # LangGraph 图与状态
 from langgraph.graph import END, StateGraph
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.types import Command, interrupt
 
 dashscope.api_key = os.getenv("DASHSCOPE_API_KEY")
 _GAODE_API_KEY = os.getenv("AMAP_MAPS_API_KEY")
@@ -585,6 +586,127 @@ def demo_router():
 
 
 # ---------------------------------------------------------------------------
+# 5. 人机交互节点 - interrupt() 暂停 → 人工审核/编辑 → 处理反馈
+# ---------------------------------------------------------------------------
+
+
+class HitlState(TypedDict):
+    query: str
+    suggestion: str  # AI 生成的建议，供人工审核
+    decision: str  # approved / rejected，记录人工决定
+    response: str
+
+
+def _hitl_analyze(state: HitlState) -> dict:
+    """AI 根据用户请求生成一条具体行动建议，等待人工审核。"""
+    query = (state.get("query") or "").strip()
+    suggestion = _call_llm(
+        f"用户请求：{query}\n\n请给出你建议采取的具体行动方案，用一句话说清楚要做什么，不超过40字。",
+        system="你是一个行动建议助手，只输出具体、可执行的建议本身，不要解释。",
+    )
+    print(f"✨ AI 建议: {suggestion}")
+    return {"suggestion": suggestion or "（未能生成建议，请重新提问）"}
+
+
+def _hitl_review(state: HitlState) -> Command[Literal["process", "__end__"]]:
+    """
+    暂停图执行，把 AI 建议交给人工审核。
+    resume 传入 True/False 表示批准/拒绝；传入非空字符串表示"批准并采用编辑后的建议"。
+    """
+    decision = interrupt({
+        "question": "是否批准以下 AI 建议？可直接批准/拒绝，或提交编辑后的文本作为最终建议。",
+        "suggestion": state.get("suggestion", ""),
+    })
+    print(f"👤 人工审核结果: {decision!r}")
+    if isinstance(decision, str) and decision.strip():
+        # 人工编辑过建议内容：视为批准，并采用编辑后的文本
+        return Command(goto="process", update={"decision": "approved", "suggestion": decision.strip()})
+    if decision:
+        return Command(goto="process", update={"decision": "approved"})
+    return Command(
+        goto=END,
+        update={"decision": "rejected", "response": "已拒绝该建议，未执行任何操作。"},
+    )
+
+
+def _hitl_process(state: HitlState) -> dict:
+    """人工批准（或编辑）后执行，生成最终回复。"""
+    suggestion = state.get("suggestion", "")
+    response = f"✅ 已按审核通过的建议执行：{suggestion}"
+    print(f"⚙️ {response}")
+    return {"response": response}
+
+
+def build_hitl_graph():
+    """人机交互图：analyze → review(interrupt) → process | END。需要 checkpointer 才能跨请求暂停/恢复。"""
+    builder = StateGraph(HitlState)
+    builder.add_node("analyze", _hitl_analyze)
+    # destinations 告诉 get_graph() 这个 Command 节点可能跳去哪些目标，
+    # 纯供静态可视化用，实际路由仍由 _hitl_review 运行时返回的 Command(goto=...) 决定。
+    builder.add_node("review", _hitl_review, destinations=("process", END))
+    builder.add_node("process", _hitl_process)
+    builder.set_entry_point("analyze")
+    builder.add_edge("analyze", "review")
+    builder.add_edge("process", END)
+    return builder.compile(checkpointer=MemorySaver())
+
+
+# HITL 图依赖 checkpointer 维持跨请求（analyze→interrupt / resume→process）的暂停状态，
+# 必须是同一个编译后的图对象和同一个 checkpointer 实例，因此在模块级构建一次并复用，
+# 而不是像 router/loop/parallel 那样每次请求都重新 build。
+_HITL_GRAPH = build_hitl_graph()
+
+
+def demo_hitl():
+    """演示 HITL 流程：第一次调用命中 interrupt 暂停，第二次带 resume 决定继续。"""
+    graph = _HITL_GRAPH
+    print("📊 **人机交互流程图**")
+    try:
+        graph.get_graph().print_ascii()
+    except Exception:
+        print("  (图结构: analyze → review →[interrupt]→ process | END)")
+    print()
+    config = {"configurable": {"thread_id": "demo-hitl-1"}}
+    out = graph.invoke({"query": "帮我优化这段文案", "suggestion": "", "decision": "", "response": ""}, config)
+    print("命中 interrupt:", out.get("__interrupt__"))
+    resumed = graph.invoke(Command(resume=True), config)
+    print("恢复后 response:", resumed.get("response"))
+    return graph
+
+
+def run_hitl_graph(input_state: dict | None, thread_id: str, resume=None) -> dict:
+    """
+    执行/恢复 HITL 图，供 HTTP 层调用。
+    首次调用不传 resume：命中 interrupt 后返回 waitingForInput=True + interrupt payload。
+    第二次调用带上同一个 thread_id + resume（人工决定），从暂停点继续执行到 END。
+    """
+    graph = _HITL_GRAPH
+    config = {"configurable": {"thread_id": thread_id}}
+    if resume is not None:
+        run_input = Command(resume=resume)
+    else:
+        default = DEFAULT_INPUTS.get("hitl", {})
+        run_input = {**default, **(input_state or {})}
+    result = graph.invoke(run_input, config=config)
+    interrupts = result.get("__interrupt__")
+    if interrupts:
+        first = interrupts[0]
+        payload = getattr(first, "value", first)
+        return {
+            "threadId": thread_id,
+            "waitingForInput": True,
+            "interrupt": payload,
+            "finalState": {k: v for k, v in result.items() if k != "__interrupt__"},
+        }
+    return {
+        "threadId": thread_id,
+        "waitingForInput": False,
+        "finalState": result,
+        "response": result.get("response", ""),
+    }
+
+
+# ---------------------------------------------------------------------------
 # 6. 实时执行监控 - stream 可视化
 # ---------------------------------------------------------------------------
 
@@ -870,12 +992,15 @@ GRAPH_BUILDERS = {
     "router": build_router_graph,
     "loop": build_loop_graph,
     "parallel": build_parallel_graph,
+    # hitl 需要跨请求维持 interrupt 暂停状态，复用模块级单例，而非每次重新 build
+    "hitl": lambda: _HITL_GRAPH,
 }
 
 DEFAULT_INPUTS = {
     "router": {"query": "今天天气怎么样？", "intent": "", "response": ""},
     "loop": {"messages": [], "next_step": "", "iteration": 0, "query": "", "response": ""},
     "parallel": {"input_text": "示例文本", "analyses": [], "final_result": "", "response": ""},
+    "hitl": {"query": "", "suggestion": "", "decision": "", "response": ""},
 }
 
 def get_graph_schema(name: str) -> dict | None:
@@ -999,6 +1124,18 @@ def langgraph_run_api(request: Request):
         input_state = {**input_state, "query": top_query}
     if graph_name == "parallel" and (top_query or input_state.get("query")) and not input_state.get("input_text"):
         input_state = {**input_state, "input_text": (top_query or input_state.get("query", "")).strip() or "示例文本"}
+
+    if graph_name == "hitl":
+        # hitl 走独立的暂停/恢复流程（interrupt），不复用 router/loop/parallel 的无状态 stream 收集逻辑。
+        # 首次请求：body 传 {graph:"hitl", threadId, query}；命中 interrupt 后返回 waitingForInput=True + interrupt。
+        # 第二次请求：body 传 {graph:"hitl", threadId（同一个）, resume: true/false/"编辑后的文本"}。
+        thread_id = body.get("threadId") or body.get("thread_id") or "hitl-default"
+        resume_value = body.get("resume")
+        try:
+            out = run_hitl_graph(input_state, thread_id, resume=resume_value)
+        except Exception as e:
+            return ({"code": 400, "msg": str(e), "data": {}}, 400)
+        return {"code": 0, "msg": "ok", "data": out}
 
     builder_fn = GRAPH_BUILDERS.get(graph_name)
     if not builder_fn:
