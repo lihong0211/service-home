@@ -3,12 +3,12 @@ Gmail 智能助手 - 需要 Google OAuth 2.0 配置
 环境变量：
   GOOGLE_CLIENT_ID     - Google Cloud Console 的 OAuth 2.0 客户端 ID
   GOOGLE_CLIENT_SECRET - Google Cloud Console 的 OAuth 2.0 客户端密钥
-  GOOGLE_REDIRECT_URI  - OAuth 回调地址（默认 http://localhost:3000/ai/gmail/callback）
+  GOOGLE_REDIRECT_URI  - OAuth 回调地址（默认 http://localhost:3001/ai/gmail/callback）
 
 配置步骤：
 1. 前往 https://console.cloud.google.com/apis/credentials
 2. 创建 OAuth 2.0 客户端 ID（类型：Web 应用）
-3. 添加授权回调 URI：http://localhost:3000/ai/gmail/callback
+3. 添加授权回调 URI：http://localhost:3001/ai/gmail/callback
 4. 启用 Gmail API：https://console.cloud.google.com/apis/library/gmail.googleapis.com
 5. 将 client_id 和 client_secret 写入 .env 文件
 """
@@ -20,7 +20,7 @@ from service.ai._dashscope_common import call_dashscope_text
 
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
-GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "http://localhost:3000/ai/gmail/callback")
+GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "http://localhost:3001/ai/gmail/callback")
 GMAIL_SCOPES = "https://www.googleapis.com/auth/gmail.readonly"
 
 _token_store: dict = {}

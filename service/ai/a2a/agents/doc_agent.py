@@ -63,7 +63,7 @@ def _extract_outline(message: Message) -> dict | None:
 
 
 _OLLAMA_URL = "http://localhost:11434"
-_LLM_MODEL = "my-deepseek-r1-1.5"
+_LLM_MODEL = "deepseek-r1:1.5b"
 _THINKING_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 
 

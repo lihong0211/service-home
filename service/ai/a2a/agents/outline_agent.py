@@ -65,8 +65,18 @@ def _extract_topic(message: Message) -> str:
     return ""
 
 
+def _extract_style(message: Message) -> str:
+    """从 Message.parts 中提取 StyleAgent 产出的风格设定（跳过/默认时返回空）"""
+    for part in message.parts:
+        if hasattr(part, "type") and part.type == "data":
+            data = part.data or {}
+            if data.get("style") and not data.get("skipped"):
+                return str(data["style"])
+    return ""
+
+
 _OLLAMA_URL = "http://localhost:11434"
-_LLM_MODEL = "my-deepseek-r1-1.5"
+_LLM_MODEL = "deepseek-r1:1.5b"
 _THINKING_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 
 
@@ -119,10 +129,12 @@ def _parse_outline_text(topic: str, text: str) -> dict:
     return {"topic": topic, "sections": sections}
 
 
-def _generate_outline(topic: str) -> dict:
-    """调用 LLM 根据主题生成结构化大纲"""
+def _generate_outline(topic: str, style: str = "") -> dict:
+    """调用 LLM 根据主题生成结构化大纲；style 非空时（来自 StyleAgent）会影响大纲语气"""
+    style_line = f"写作风格要求：{style}\n\n" if style else ""
     prompt = (
         f"请为主题「{topic}」生成一篇文章的大纲。\n\n"
+        f"{style_line}"
         "格式要求：\n"
         "- 列出 4~6 个章节标题\n"
         "- 每个章节下用短横线列出 3~5 个具体要点\n"
@@ -170,7 +182,7 @@ def _process(message: Message) -> Task:
     task.status = TaskStatus(state="working")
     _tasks[task_id] = task
 
-    outline = _generate_outline(topic)
+    outline = _generate_outline(topic, _extract_style(message))
     artifact = A2AArtifact(
         name="outline",
         description="文章大纲",

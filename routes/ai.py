@@ -98,7 +98,7 @@ from service.ai.vector_db_qdrant import (
     category_delete_api as vector_db_category_delete_api,
     search_api as vector_db_search_api,
 )
-from service.ai.a2a import a2a_chain_api, a2a_chain_stream_api
+from service.ai.a2a import a2a_chain_api, a2a_chain_resume_api, a2a_chain_stream_api
 from service.ai.finetuning.finetuning import finetuning_chat_api, list_lora_options_api
 from service.ai.docs import service_ai_doc_api
 from service.ai.agent.agent_doctor import doctor_chat_api, doctor_session_api
@@ -323,6 +323,7 @@ def register_ai(router: APIRouter):
     _ai_route(router, "/ai/mcp-stt/chat", mcp_stt_chat_api, ["POST"])
     _ai_route(router, "/ai/mcp-stt/chat-stream", mcp_stt_chat_stream_api, ["POST"])
     _ai_route(router, "/ai/a2a/chain", a2a_chain_api, ["POST"])
+    _ai_route(router, "/ai/a2a/chain/resume", a2a_chain_resume_api, ["POST"])
     _ai_route(router, "/ai/a2a/chain/stream", a2a_chain_stream_api, ["POST"])
 
     _ai_route(router, "/ai/finetuning/chat", finetuning_chat_api, ["POST"])

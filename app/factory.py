@@ -3,6 +3,7 @@
 应用工厂：集中注册中间件、路由、WebSocket、异常处理（FastAPI 推荐结构）。
 """
 import os
+import signal
 import sys
 import subprocess
 from contextlib import asynccontextmanager
@@ -15,6 +16,19 @@ from fastapi.responses import JSONResponse
 
 from app.database import db, Base
 from config.db import DB_AI_CONFIG
+
+
+def _kill_stale_listener(port: int) -> None:
+    """杀掉残留在该端口上的旧进程，确保重启后子智能体总是加载最新代码。"""
+    try:
+        pids = subprocess.check_output(["lsof", "-ti", f":{port}"], text=True).split()
+    except subprocess.CalledProcessError:
+        return
+    for pid in pids:
+        try:
+            os.kill(int(pid), signal.SIGTERM)
+        except ProcessLookupError:
+            pass
 
 
 def _validate_db_config() -> None:
@@ -37,13 +51,15 @@ async def lifespan(app: FastAPI):
 
         traceback.print_exc()
     root = Path(__file__).resolve().parent.parent
-    for rel_path, label in [
-        ("service/ai/a2a/agents/outline_agent.py", "OutlineAgent :8001"),
-        ("service/ai/a2a/agents/doc_agent.py", "DocAgent    :8002"),
-        ("service/ai/a2a/agents/summary_agent.py", "SummaryAgent:8003"),
+    for rel_path, label, port in [
+        ("service/ai/a2a/agents/outline_agent.py", "OutlineAgent :8001", 8001),
+        ("service/ai/a2a/agents/doc_agent.py", "DocAgent    :8002", 8002),
+        ("service/ai/a2a/agents/summary_agent.py", "SummaryAgent:8003", 8003),
+        ("service/ai/a2a/agents/style_agent.py", "StyleAgent  :8004", 8004),
     ]:
         script = root / rel_path
         if script.exists():
+            _kill_stale_listener(port)
             subprocess.Popen(
                 [sys.executable, str(script)],
                 cwd=str(root),
