@@ -108,11 +108,11 @@ Single MySQL database (`ai` schema by default). Models inherit from `Base` in `a
 
 ## MANDATORY: 全栈自动化任务工作流
 
-**每个 task 同时覆盖后端（service-home）和前端（ai-dashboard），在一个 session 里全部完成后再提交两个仓库。**
+**每个 task 同时覆盖后端（service-home）和前端（ai-dashboard，即 doctor-dog-web monorepo 下的 apps/ai），在一个 session 里全部完成后再提交两个仓库。**
 
 两个仓库路径：
-- 后端：`/Users/lihong/Desktop/personal/code/service-home`（当前目录）
-- 前端：`/Users/lihong/Desktop/personal/code/ai-dashboard`
+- 后端：`/Users/lihong/Desktop/personal/code/service-home`（当前目录，独立 git 仓库）
+- 前端：`/Users/lihong/Desktop/personal/code/doctor-dog-web/apps/ai`（独立 git 仓库是 `doctor-dog-web`，pnpm workspace，`apps/ai` 是其中一个 app；`git add .`/`git commit` 在 `apps/ai` 目录下执行时只会暂存该子树内的改动，不影响 monorepo 里其他 app）
 
 ### Step 1: 初始化环境
 
@@ -125,11 +125,11 @@ if ! curl -s http://localhost:3000/ping > /dev/null 2>&1; then
   sleep 4
 fi
 
-# --- 前端 ---
-cd /Users/lihong/Desktop/personal/code/ai-dashboard
-if [ ! -d "node_modules" ]; then npm install; fi
+# --- 前端（pnpm workspace，不要用 npm install，会和 pnpm-lock.yaml 打架）---
+cd /Users/lihong/Desktop/personal/code/doctor-dog-web/apps/ai
+if [ ! -d "node_modules" ]; then pnpm install; fi
 if ! curl -s http://localhost:5173 > /dev/null 2>&1; then
-  npm run dev &
+  pnpm dev &
   sleep 5
 fi
 ```
@@ -176,7 +176,7 @@ curl -X POST http://localhost:3000/ai/my-feature/action \
 
 ### Step 3b: 实现前端（ai-dashboard）
 
-在 `/Users/lihong/Desktop/personal/code/ai-dashboard` 目录操作，**必须修改四处**：
+在 `/Users/lihong/Desktop/personal/code/doctor-dog-web/apps/ai` 目录操作，**必须修改四处**：
 
 1. **`src/service/{feature}.ts`** — API 调用层
 
@@ -215,8 +215,8 @@ import { NewIcon } from '@ant-design/icons'
 **前端测试：**
 
 ```bash
-cd /Users/lihong/Desktop/personal/code/ai-dashboard
-npm run build  # TypeScript 必须无错误
+cd /Users/lihong/Desktop/personal/code/doctor-dog-web/apps/ai
+pnpm build  # TypeScript 必须无错误
 # 用 Playwright MCP 打开 http://localhost:5173，导航到新页面，截图确认
 ```
 
@@ -227,7 +227,7 @@ npm run build  # TypeScript 必须无错误
 ```
 ## [YYYY-MM-DD] - Task {id}: {任务名称}
 ### 后端实现：[service-home 新增文件 + 路由]
-### 前端实现：[ai-dashboard 新增文件 + 路由/菜单]
+### 前端实现：[doctor-dog-web/apps/ai 新增文件 + 路由/菜单]
 ### 测试结果：[后端 curl + 前端 build + 浏览器截图描述]
 ### 注意事项：[后续 Agent 需要了解的信息]
 ```
@@ -243,8 +243,9 @@ git add .
 git commit -m "feat: [Task {id}] {任务名称} - 后端实现"
 git push
 
-# 提交并推送前端
-cd /Users/lihong/Desktop/personal/code/ai-dashboard
+# 提交并推送前端（apps/ai 是 doctor-dog-web monorepo 里的一个 workspace app，
+# 在这个子目录下 git add . 只会暂存 apps/ai 子树的改动，不会影响 monorepo 里其他 app）
+cd /Users/lihong/Desktop/personal/code/doctor-dog-web/apps/ai
 git add .
 git commit -m "feat: [Task {id}] {任务名称} - 前端实现"
 git push

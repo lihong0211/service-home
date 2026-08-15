@@ -1529,12 +1529,14 @@ def _persist_trace(
     run_result: dict | None,
     duration_ms: int,
     error: str | None = None,
-) -> None:
+) -> int | None:
     """
     【可观测性】把一次图执行（invoke 或 stream 一轮）落一条 trace 记录，供排查"哪一步慢/哪一步错"
     和后续 bad case 回流分析用。用独立 session（SessionLocal），不读请求级 db.session：SSE 分支
     落库发生在 StreamingResponse 对象返回之后，此时 _ai_route 已经 clear_request_session，
     db.session 会抛 RuntimeError。落库失败只记日志，不抛出，不影响主流程。
+    返回新插入行的 id（落库失败时返回 None）——【回流机制】前端要靠这个 id 调
+    /ai/langgraph/trace/feedback 给这次回答打反馈，所以调用方要把它透传进响应体。
     """
     from app.database import SessionLocal
     from model.ai.agent_trace import AgentTrace
@@ -1543,7 +1545,7 @@ def _persist_trace(
     final_state = (run_result or {}).get("finalState", {}) or {}
     session = SessionLocal()
     try:
-        session.add(AgentTrace(
+        row = AgentTrace(
             graph_name=graph_name,
             thread_id=state.get("threadId") or state.get("thread_id"),
             user_id=state.get("user_id"),
@@ -1557,11 +1559,14 @@ def _persist_trace(
                 [{"nodeId": s.get("nodeId"), "duration_ms": s.get("duration_ms")} for s in steps],
                 ensure_ascii=False,
             ),
-        ))
+        )
+        session.add(row)
         session.commit()
+        return row.id
     except Exception:
         logger.exception("agent trace 落库失败，不影响主流程")
         session.rollback()
+        return None
     finally:
         session.close()
 
@@ -1695,7 +1700,7 @@ def run_graph_and_collect_steps(graph_name: str, input_state: dict | None = None
     except Exception as e:
         _persist_trace(graph_name, trace_state, None, round((time.perf_counter() - t_start) * 1000), error=str(e))
         return {"error": str(e)}
-    _persist_trace(graph_name, trace_state, run_result, round((time.perf_counter() - t_start) * 1000))
+    trace_id = _persist_trace(graph_name, trace_state, run_result, round((time.perf_counter() - t_start) * 1000))
     schema = graph_to_schema(graph)
     steps = run_result["steps"]
     execution_order = run_result["executionOrder"]
@@ -1719,6 +1724,8 @@ def run_graph_and_collect_steps(graph_name: str, input_state: dict | None = None
         "completedSteps": completed_steps,
         "executionProgress": execution_progress,
         "response": run_result["finalState"].get("response", ""),
+        # 【回流机制】前端要靠这个 id 调 /ai/langgraph/trace/feedback 给这次回答打反馈
+        "traceId": trace_id,
     }
 
 
@@ -1824,7 +1831,7 @@ def langgraph_run_api(request: Request):
                         yield f"data: {json.dumps({'type': 'token', **payload}, ensure_ascii=False)}\n\n"
                     else:
                         # done：补充执行监控与对话用字段，便于前端显示进度和 finalState.response
-                        _persist_trace(graph_name, trace_state, payload, round((time.perf_counter() - t_start) * 1000))
+                        trace_id = _persist_trace(graph_name, trace_state, payload, round((time.perf_counter() - t_start) * 1000))
                         steps_list = payload.get("steps", [])
                         completed = len(steps_list)
                         progress = round((completed / total_nodes * 100), 1) if total_nodes else 0
@@ -1834,6 +1841,7 @@ def langgraph_run_api(request: Request):
                             "completedSteps": completed,
                             "executionProgress": progress,
                             "response": (payload.get("finalState") or {}).get("response", ""),
+                            "traceId": trace_id,
                         }
                         yield f"data: {json.dumps({'type': 'done', **done_data}, ensure_ascii=False)}\n\n"
                 yield "data: [DONE]\n\n"

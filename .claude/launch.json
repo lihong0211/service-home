@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "en",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "/Users/lihong/Desktop/personal/code/doctor-dog-web/apps/en", "run", "dev"],
+      "port": 3389
+    },
+    {
+      "name": "ai-dashboard",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "ai", "run", "dev"],
+      "port": 5173
+    }
+  ]
+}
