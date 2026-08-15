@@ -7,6 +7,8 @@ from .knowledge_base_document import KnowledgeBaseDocument
 from .knowledge_base_segment import KnowledgeBaseSegment
 from .ppt_record import PptRecord
 from .video_gen_task import VideoGenTask
+from .agent_trace import AgentTrace
+from .agent_booking import AgentBooking
 
 __all__ = [
     "VectorDb",
@@ -17,4 +19,6 @@ __all__ = [
     "KnowledgeBaseSegment",
     "PptRecord",
     "VideoGenTask",
+    "AgentTrace",
+    "AgentBooking",
 ]

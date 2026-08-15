@@ -13,7 +13,13 @@ from app.deps import SessionDep
 from utils.api_result import normalize_api_result
 
 from service.ai.chat import chat, ocr_chat
-from service.ai.langchain import langgraph_graph_api, langgraph_run_api
+from service.ai.langchain import (
+    langgraph_graph_api,
+    langgraph_run_api,
+    trace_feedback_api,
+    trace_bad_cases_api,
+    saga_demo_api,
+)
 from service.ai.agent import (
     agent_list_api,
     agent_schema_api,
@@ -297,6 +303,11 @@ def register_ai(router: APIRouter):
 
     _ai_route(router, "/ai/langgraph/graph", langgraph_graph_api, ["GET"])
     _ai_route(router, "/ai/langgraph/run", langgraph_run_api, ["POST"])
+    # 【回流机制】反馈采集 + bad case 查询，见 service/ai/langchain.py 对应函数注释
+    _ai_route(router, "/ai/langgraph/trace/feedback", trace_feedback_api, ["POST"])
+    _ai_route(router, "/ai/langgraph/trace/bad-cases", trace_bad_cases_api, ["GET"])
+    # 【副作用回滚】Saga 补偿事务演示，见 service/ai/langchain.py 的 run_saga/saga_demo_api
+    _ai_route(router, "/ai/langgraph/saga-demo", saga_demo_api, ["POST"])
     _ai_route(router, "/ai/agent/list", agent_list_api, ["GET"])
     _ai_route(router, "/ai/agent/schema", agent_schema_api, ["GET"])
     _ai_route(router, "/ai/agent/run", agent_run_api, ["POST"])
