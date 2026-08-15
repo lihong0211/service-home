@@ -9,6 +9,9 @@
 
 代码里每处相关实现都用 `【模块 N／8：xxx】` 的注释标出，搜这个关键字能快速定位。
 
+想直接上手用（每个功能对应哪个前端页面、怎么操作、curl 怎么调），看
+[AGENT_FEATURES_USAGE.md](./AGENT_FEATURES_USAGE.md)。
+
 | # | 模块 | 生产化程度 | 核心代码 |
 |---|---|---|---|
 | 1 | 上下文管理 | ✅ 生产级（仅 router 图 chat 节点） | `_build_context_window` / `_chat_handler` / `build_router_graph` |
