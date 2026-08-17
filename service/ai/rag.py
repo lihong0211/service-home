@@ -7,6 +7,7 @@ RAG 模块：基于知识库的检索与问答。
 """
 
 import logging
+import time
 
 import anyio.from_thread
 from fastapi import Request
@@ -263,6 +264,38 @@ def rag_chat(
     return out
 
 
+def _persist_rag_trace(question: str, answer: str, duration_ms: int, error: str | None = None) -> int | None:
+    """
+    【可观测性】+【回流机制】给一次 RAG 问答落一条 trace，复用 LangGraph 那张 agent_trace 表
+    （graph_name="rag" 区分开，跟 router/loop/parallel/hitl 混在同一张表按 graph_name 筛）。
+    前端拿到返回的 id（traceId）才能对 RAG 回答调 /ai/langgraph/trace/feedback 打反馈——
+    RAG 问答之前完全没接可观测性/回流，只有 LangGraph demo 图有，这里补上。
+    落库失败只记日志，不抛出，不影响主流程。
+    """
+    from app.database import SessionLocal
+    from model.ai.agent_trace import AgentTrace
+
+    session = SessionLocal()
+    try:
+        row = AgentTrace(
+            graph_name="rag",
+            input_summary=(question or "")[:2000],
+            output_summary=(answer or "")[:2000],
+            status="error" if error else "success",
+            error_message=error,
+            duration_ms=duration_ms,
+        )
+        session.add(row)
+        session.commit()
+        return row.id
+    except Exception:
+        logger.exception("rag trace 落库失败，不影响主流程")
+        session.rollback()
+        return None
+    finally:
+        session.close()
+
+
 def rag_ask_api(request: Request):
     """
     基于知识库的 RAG 问答。
@@ -328,23 +361,30 @@ def rag_ask_api(request: Request):
         conversation_history = "\n".join(
             str(x) for x in data["conversation_history"]
         ).strip()
-    out = rag_chat(
-        kb_id=kb_id,
-        kb_name=kb_name or None,
-        question=question,
-        top_k=top_k,
-        model=model,
-        enable_query_rewrite=enable_query_rewrite,
-        enable_rerank=enable_rerank,
-        enable_hybrid=enable_hybrid,
-        enable_bm25=enable_bm25,
-        enable_mmr=enable_mmr,
-        mmr_lambda=mmr_lambda,
-        score_threshold=score_threshold,
-        category=category,
-        metadata_filter=metadata_filter,
-        conversation_history=conversation_history,
-    )
+    t_start = time.perf_counter()
+    try:
+        out = rag_chat(
+            kb_id=kb_id,
+            kb_name=kb_name or None,
+            question=question,
+            top_k=top_k,
+            model=model,
+            enable_query_rewrite=enable_query_rewrite,
+            enable_rerank=enable_rerank,
+            enable_hybrid=enable_hybrid,
+            enable_bm25=enable_bm25,
+            enable_mmr=enable_mmr,
+            mmr_lambda=mmr_lambda,
+            score_threshold=score_threshold,
+            category=category,
+            metadata_filter=metadata_filter,
+            conversation_history=conversation_history,
+        )
+    except Exception as e:
+        _persist_rag_trace(question, "", round((time.perf_counter() - t_start) * 1000), error=str(e))
+        raise
+    trace_id = _persist_rag_trace(question, out.get("answer", ""), round((time.perf_counter() - t_start) * 1000))
+    out["traceId"] = trace_id
     return {"code": 0, "msg": "ok", "data": out}
 
 
