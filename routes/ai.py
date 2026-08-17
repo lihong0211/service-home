@@ -90,7 +90,12 @@ from service.ai.rag_eval import (
     batch_evaluate_api,
 )
 from service.ai.bm25_es import bm25_sync_api
-from service.ai.text2sql import text2sql_api, table_data_api
+from service.ai.text2sql import (
+    text2sql_api,
+    text2sql_hitl_api,
+    text2sql_resume_api,
+    table_data_api,
+)
 from service.ai.files import upload_file_api, list_files_api, preview_file_api
 from service.ai.vector_db_qdrant import (
     list_api as vector_db_list_api,
@@ -310,6 +315,9 @@ def register_ai(router: APIRouter):
     _ai_route(router, "/ai/rag/testset/list", list_testset_api, ["GET"])
     _ai_route(router, "/ai/rag/testset/evaluate", batch_evaluate_api, ["POST"])
     _ai_route(router, "/ai/text2sql", text2sql_api, ["POST"])
+    # 写操作 SQL 走人工审核（interrupt/resume），跟 HITL 演示图同一套机制，见 service/ai/text2sql.py
+    _ai_route(router, "/ai/text2sql/run", text2sql_hitl_api, ["POST"])
+    _ai_route(router, "/ai/text2sql/resume", text2sql_resume_api, ["POST"])
     _ai_route(router, "/ai/table-data", table_data_api, ["GET", "POST"])
     _ai_route(router, "/ai/files/upload", upload_file_api, ["POST"])
     _ai_route(router, "/ai/files/list", list_files_api, ["GET"])

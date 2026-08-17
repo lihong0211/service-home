@@ -86,3 +86,25 @@
 - 根因：`_documents_from_pptx` 原来每页独立成块，不管长短。像"迪士尼乐园的设施与项目"这种只有7个字的章节分隔页，因为关键词密度高（没有其他内容稀释），反而比真正的正文段落跟 query 算出更高的相似度，排到检索结果第一但没有实际信息量。
 - 修复：knowledge.py `_documents_from_pptx` 加 `_PPTX_MIN_CHUNK_CHARS = 40`，单页文本长度不够时并入下一页一起成块（同一思路的段落累积合并，DOCX 那边本来就有），category 相应变成「第N-M页」。
 - 测试：disney_new 库（id=21）「迪士尼乐园ppt课件.pptx」（document_id=320）从 25 段减到 17 段，原来独立的"迪士尼乐园的设施与项目"标题块跟下一页真实内容（"总结词\n迪士尼主题乐园是游客体验的核心..."）合并成一块；重新分段+全量向量化（1028 条）后用同一个 query「迪士尼乐园有哪些必玩项目？」重新检索，之前排第一的空标题块已不在 top-5，第一名换成真正有内容的"迪士尼乐园有哪些必玩项目.doc"。
+
+---
+
+## [2026-08-17] - Text2SQL 联动人工审核（HITL）：写操作 SQL 不再硬拒绝
+### 后端实现（service-home）：
+- `service/ai/text2sql.py`：新增 `_extract_sql_from_answer_text`（agent 只在文字答案里给 SQL、没调工具时的兜底提取）、`_SQL_PREFIX_ALLOW_WRITE`（替换 LangChain SQL Agent 默认提示词里硬编码的"禁止 DML"限制）、`_execute_select`/`_execute_write`（读写分离执行）、`Text2SqlState` + `_t2s_generate`/`_t2s_review`/`_t2s_execute` 三节点图（generate → review(interrupt 暂停写操作) → execute），跟 `langchain.py` 里 HITL 演示图同一套 `interrupt()`/`Command`/`SqliteSaver` 机制，独立 checkpointer 文件 `data/checkpoints/text2sql.sqlite`。
+- `routes/ai.py`：新增 `POST /ai/text2sql/run`（生成+SELECT直接执行/写操作转人工审核）、`POST /ai/text2sql/resume`（批准/编辑批准/拒绝）。旧 `POST /ai/text2sql` 保留不变（向后兼容，写操作仍硬拒绝）。
+### 关键 bug：人工审核被 Agent 自己绕过
+- 现象：批准执行后 `agent_booking` 表插入了两行完全相同的数据。
+- 排查：一度怀疑是 LangGraph "interrupt 节点 resume 时从头重新执行" 导致下游 execute 节点被调用两次，加了 `executed` 幂等标记防御——但加了幂等标记后 bug 仍复现，且加调试日志确认 `_t2s_execute` 只被调用了一次，数据库却仍然多了一行。
+- 真根因：LangChain `create_sql_agent` 内置的 `sql_db_query` 工具会真的拿 `db.run()` 去执行 SQL——Agent 为了"验证自己写的 INSERT 对不对"经常会主动调用这个工具，哪怕问题是纯粹的写操作。也就是说人工审核前，SQL 已经在生成阶段被真实执行了一次；批准后 `_t2s_execute` 又真实执行一次，等于人工审核形同虚设。
+- 修复：新增 `_ReadOnlySQLDatabase(SQLDatabase)`，重写 `run()`，生成阶段（`allow_write=True`）检测到写操作直接拒绝真正执行，只允许 Agent 把 SQL 文本写进最终答案；真正执行完全留给人工批准后的 `_t2s_execute`。`executed` 幂等标记保留作为兜底防御。
+### 前端实现（doctor-dog-web/apps/ai）：
+- `src/service/text2sql.ts`：新增 `runText2SqlHitl`/`resumeText2SqlHitl` + `Text2SqlInterrupt`/`Text2SqlHitlResult` 类型，跟 `langgraph.ts` 的 `runHitl`/`resumeHitl` 同构。
+- `src/pages/Text2SQL.tsx`：`Text2SQLTab` 改用新的 HITL 接口；命中 interrupt 时显示"需要人工审核"卡片（可编辑 SQL + 批准并执行/拒绝按钮，参考 `AgentHitl.tsx` 的 UI 模式），最终结果区分"已执行"/"已拒绝执行该SQL"状态。
+### 测试结果：
+- 后端 curl 全流程：SELECT 直接放行、写操作 interrupt→approve（`agent_booking` 精确插入 1 行，不再重复）、写操作 interrupt→reject（0 行插入，`decision: rejected`）均通过。
+- 前端 `pnpm build` 无 TypeScript 错误；浏览器实测三条路径（截图确认）：写操作命中人工审核卡片 → 批准并执行（数据库精确 1 行）→ 新请求拒绝路径（"已拒绝执行该SQL"提示，无数据写入）。
+- 清理了测试过程中 `agent_booking` 表产生的全部测试行（id 10-20）。
+### 注意事项：
+- 后端 3001 端口对应的 launchd 服务 `com.lihong.service-home` 在本 session 中途被 unload 过，当前是手动 nohup 起的进程（非 launchd 托管）——后续如果 `launchctl kickstart` 报 "Could not find service"，需要先 `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.lihong.service-home.plist` 重新装载，否则改代码后 kickstart 不会生效。
+- `create_sql_agent`/`SQLDatabaseToolkit` 默认会真实执行 SQL 做"自我验证"，这个坑对任何"AI 生成 SQL + 人工审核后执行"的架构都成立，不是 Text2SQL 独有——以后接入别的需要 HITL 网关的 SQL 生成场景，记得复用 `_ReadOnlySQLDatabase` 这个模式。
