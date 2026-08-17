@@ -112,9 +112,23 @@ You MUST double check your query before executing it. If you get an error while 
 
 You MAY generate DML statements (INSERT, UPDATE, DELETE) when the user explicitly asks to change data. \
 A human will review and approve the statement before it is actually executed against the database — you \
-are only responsible for producing a syntactically correct statement, not for deciding whether it is safe.
+are only responsible for producing a syntactically correct statement, not for deciding whether it is safe. \
+The sql_db_query tool will NOT actually run a DML statement for you at this stage; it will only tell you \
+the statement is pending human review. This is expected — do not treat that message as an error and do not \
+retry the tool call.
+
+If the question asks you to change data (insert/update/delete), your final answer MUST end with the exact \
+SQL statement wrapped in a ```sql code block, and MUST NOT claim the change has already been made — it has \
+NOT been executed yet and is only pending human approval. Never say things like "已成功更新" / "successfully \
+updated" / "已插入" for a DML statement; instead say the statement is ready and awaiting approval.
 
 If the question does not seem related to the database, just return "I don't know" as the answer."""
+
+
+_FALSE_SUCCESS_CLAIM_PATTERN = re.compile(
+    r"已(成功)?(更新|插入|删除|修改|完成)|successfully (updated|inserted|deleted|completed)|has been (successfully )?updated",
+    re.IGNORECASE,
+)
 
 
 class _ReadOnlySQLDatabase(SQLDatabase):
@@ -174,6 +188,12 @@ def _generate_sql(question: str, model: str = DEFAULT_CHAT_MODEL, allow_write: b
     output = response.get("output", "")
     if not sql and allow_write:
         sql = _extract_sql_from_answer_text(output)
+    if not sql and allow_write and _FALSE_SUCCESS_CLAIM_PATTERN.search(output or ""):
+        # 安全兜底：允许写操作时，Agent 有时会在没有真正给出 SQL（没调工具/没写代码块）的情况下
+        # 直接在文字回答里宣称"已经改好了"——实际上 review 节点看到空 sql 会直接 END，什么都
+        # 没执行，但前端会把这段话当成正常回答展示，等于对用户撒谎说写操作成功了。这里识别出
+        # 这种"声称成功但拿不出 SQL"的情况，转成明确的 error，不让虚假的"已完成"话术透出去。
+        return {"sql": "", "answer": "", "error": "AI 未能给出可执行的 SQL，本次请求未做任何修改，请换个说法重试"}
     if not sql:
         return {"sql": "", "answer": output, "error": None if output else "未能解析出有效 SQL"}
     return {"sql": sql, "answer": "", "error": None}

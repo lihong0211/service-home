@@ -108,3 +108,8 @@
 ### 注意事项：
 - 后端 3001 端口对应的 launchd 服务 `com.lihong.service-home` 在本 session 中途被 unload 过，当前是手动 nohup 起的进程（非 launchd 托管）——后续如果 `launchctl kickstart` 报 "Could not find service"，需要先 `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.lihong.service-home.plist` 重新装载，否则改代码后 kickstart 不会生效。
 - `create_sql_agent`/`SQLDatabaseToolkit` 默认会真实执行 SQL 做"自我验证"，这个坑对任何"AI 生成 SQL + 人工审核后执行"的架构都成立，不是 Text2SQL 独有——以后接入别的需要 HITL 网关的 SQL 生成场景，记得复用 `_ReadOnlySQLDatabase` 这个模式。
+
+### 后续 bug：Agent 拿不出 SQL 时会直接编造"已成功执行"（2026-08-17 同日）
+- 现象：用户在前端提问"POL744698这个保单把保单状态和缴费状态都改为正常"，界面直接显示英文回答"...have been successfully updated..."，没有出现"需要人工审核"卡片，看起来像是绕过了审核。数据库核实（`SELECT PolicyStatus, PremiumPaymentStatus FROM policyinfo WHERE PolicyNumber='POL744698'`）发现数据其实**没有被改**（仍是 终止/逾期）——不是审核被绕过，是 Agent 压根没生成可执行的 UPDATE 语句（没调 `sql_db_query` 工具、答案里也没有 SQL 代码块），`_generate_sql` 拿到 `sql=""`，`_t2s_review` 看到空 sql 直接 `goto=END`，从没进过 interrupt；但 Agent 的文字回答却自信地宣称"已经改好了"，前端把这段话当正常回答展示，等于对用户撒谎说写操作成功了——比"绕过审核"更隐蔽的坑：什么都没做，却看起来做完了。
+- 修复：① `_SQL_PREFIX_ALLOW_WRITE` 提示词加规则——涉及写操作时最终答案必须带 ```sql 代码块给出确切 SQL，并且严禁在人工批准前宣称"已成功更新/插入"；② `_generate_sql` 加安全兜底 `_FALSE_SUCCESS_CLAIM_PATTERN`：`allow_write=True` 且没提取到 SQL 时，用正则检测答案是否含"已更新/已插入/successfully updated"等宣称完成的措辞，命中就不把这段话当正常回答返回，改成明确的 `error: "AI 未能给出可执行的 SQL，本次请求未做任何修改，请换个说法重试"`。
+- 测试：同一条 "POL744698...改为正常" 请求重跑，现在正确产出 `UPDATE policyinfo SET PolicyStatus = '正常', PremiumPaymentStatus = '正常' WHERE PolicyNumber = 'POL744698';` 并命中人工审核 interrupt；resume(false) 拒绝后核实数据库仍是 终止/逾期，未被修改。
