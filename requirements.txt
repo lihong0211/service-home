@@ -48,6 +48,8 @@ langgraph-checkpoint-sqlite>=2.0.0
 # answer_correctness），evaluator LLM/embeddings 走 DashScope（OpenAI 兼容），不需要 OpenAI key。
 # 锁死版本号：v0.4 相比 v0.3 API 变动很大（collections 模块 + ascore 签名），不锁版本升级会直接炸
 ragas==0.4.3
+# ragas.testset（测试集自动生成）的间接依赖，不会被 pip 自动装上，需要显式声明
+rapidfuzz>=3.0.0
 # 股票行情数据（A股实时/历史）
 akshare>=1.12.0
 # RSS 新闻解析

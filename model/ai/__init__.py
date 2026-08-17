@@ -9,6 +9,7 @@ from .ppt_record import PptRecord
 from .video_gen_task import VideoGenTask
 from .agent_trace import AgentTrace
 from .agent_booking import AgentBooking
+from .rag_testset import RagTestsetItem
 
 __all__ = [
     "VectorDb",
@@ -21,4 +22,5 @@ __all__ = [
     "VideoGenTask",
     "AgentTrace",
     "AgentBooking",
+    "RagTestsetItem",
 ]

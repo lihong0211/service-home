@@ -83,7 +83,12 @@ from service.ai.knowledge import (
     delete_knowledge_base_document_api,
 )
 from service.ai.rag import rag_ask_api, rag_search_api
-from service.ai.rag_eval import evaluate_rag_api
+from service.ai.rag_eval import (
+    evaluate_rag_api,
+    generate_testset_api,
+    list_testset_api,
+    batch_evaluate_api,
+)
 from service.ai.bm25_es import bm25_sync_api
 from service.ai.text2sql import text2sql_api, table_data_api
 from service.ai.files import upload_file_api, list_files_api, preview_file_api
@@ -300,6 +305,10 @@ def register_ai(router: APIRouter):
     # RAGAS 评测：faithfulness/answer_relevancy 必算，context_precision/context_recall/
     # answer_correctness 需要传 ground_truth 才会算，见 service/ai/rag_eval.py
     _ai_route(router, "/ai/rag/evaluate", evaluate_rag_api, ["POST"])
+    # RAGAS 测试集自动生成 + 批量回归评测，见 service/ai/rag_eval.py
+    _ai_route(router, "/ai/rag/testset/generate", generate_testset_api, ["POST"])
+    _ai_route(router, "/ai/rag/testset/list", list_testset_api, ["GET"])
+    _ai_route(router, "/ai/rag/testset/evaluate", batch_evaluate_api, ["POST"])
     _ai_route(router, "/ai/text2sql", text2sql_api, ["POST"])
     _ai_route(router, "/ai/table-data", table_data_api, ["GET", "POST"])
     _ai_route(router, "/ai/files/upload", upload_file_api, ["POST"])
