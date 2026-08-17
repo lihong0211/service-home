@@ -1600,6 +1600,46 @@ def submit_trace_feedback(trace_id: int, rating: str, note: str = "") -> bool:
         session.close()
 
 
+def list_traces(graph_name: str | None = None, status: str | None = None, limit: int = 50) -> list[dict]:
+    """
+    【可观测性】全量查询入口：不像 list_bad_cases 那样只挑 error/bad，这里是"这段时间到底
+    跑了哪些请求、每个耗时多少、成功没成功"的完整视图，支撑排查慢请求/看整体健康度，
+    而不只是回流场景的 bad case 挖掘。steps_detail 原样透传（前端展开显示每个节点耗时）。
+    """
+    from app.database import SessionLocal
+    from model.ai.agent_trace import AgentTrace
+
+    session = SessionLocal()
+    try:
+        query = session.query(AgentTrace)
+        if graph_name:
+            query = query.filter(AgentTrace.graph_name == graph_name)
+        if status:
+            query = query.filter(AgentTrace.status == status)
+        rows = query.order_by(AgentTrace.id.desc()).limit(limit).all()
+        return [
+            {
+                "id": r.id,
+                "graph_name": r.graph_name,
+                "thread_id": r.thread_id,
+                "user_id": r.user_id,
+                "input_summary": r.input_summary,
+                "output_summary": r.output_summary,
+                "status": r.status,
+                "error_message": r.error_message,
+                "total_steps": r.total_steps,
+                "duration_ms": r.duration_ms,
+                "steps_detail": r.steps_detail,
+                "feedback": r.feedback,
+                "feedback_note": r.feedback_note,
+                "created_at": r.create_at.isoformat() if r.create_at else None,
+            }
+            for r in rows
+        ]
+    finally:
+        session.close()
+
+
 def list_bad_cases(graph_name: str | None = None, limit: int = 50) -> list[dict]:
     """
     【回流机制】挖掘入口：拉取 bad case 候选池——status='error'（系统自己判定的失败）或
@@ -1658,6 +1698,19 @@ def trace_feedback_api(request: Request):
     if not ok:
         return ({"code": 404, "msg": f"未找到 trace: {trace_id}", "data": None}, 404)
     return {"code": 0, "msg": "ok", "data": {"traceId": trace_id, "rating": rating}}
+
+
+def trace_list_api(request: Request):
+    """
+    GET /ai/langgraph/trace/list?graph=router&status=success&limit=50
+    【可观测性】全量 trace 列表，不限 status/feedback，支撑排查慢请求/看整体执行情况。
+    """
+    q = query_dict(request)
+    graph_name = q.get("graph")
+    status = q.get("status")
+    limit = int(q.get("limit") or 50)
+    traces = list_traces(graph_name, status, limit)
+    return {"code": 0, "msg": "ok", "data": {"traces": traces, "total": len(traces)}}
 
 
 def trace_bad_cases_api(request: Request):

@@ -18,6 +18,7 @@ from service.ai.langchain import (
     langgraph_run_api,
     trace_feedback_api,
     trace_bad_cases_api,
+    trace_list_api,
     saga_demo_api,
 )
 from service.ai.agent import (
@@ -310,6 +311,8 @@ def register_ai(router: APIRouter):
     # 【回流机制】反馈采集 + bad case 查询，见 service/ai/langchain.py 对应函数注释
     _ai_route(router, "/ai/langgraph/trace/feedback", trace_feedback_api, ["POST"])
     _ai_route(router, "/ai/langgraph/trace/bad-cases", trace_bad_cases_api, ["GET"])
+    # 【可观测性】全量 trace 列表（不限 status/feedback），见 service/ai/langchain.py 的 list_traces
+    _ai_route(router, "/ai/langgraph/trace/list", trace_list_api, ["GET"])
     # 【副作用回滚】Saga 补偿事务演示，见 service/ai/langchain.py 的 run_saga/saga_demo_api
     _ai_route(router, "/ai/langgraph/saga-demo", saga_demo_api, ["POST"])
     _ai_route(router, "/ai/agent/list", agent_list_api, ["GET"])
