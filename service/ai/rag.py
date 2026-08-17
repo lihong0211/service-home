@@ -205,6 +205,7 @@ def rag_chat(
         return {
             "answer": "未检索到相关文档，无法基于当前库回答。",
             "sources": [],
+            "full_contexts": [],
             "model": model,
             "rewritten_query": rewritten_query,
             "before": [],
@@ -252,6 +253,9 @@ def rag_chat(
     out = {
         "answer": answer,
         "sources": sources,
+        # sources[].text 是给前端展示用的 200 字截断摘要；full_contexts 是未截断的完整片段，
+        # 供 RAGAS 评测（faithfulness/context_precision 等）使用——截断文本会让评测判断失真。
+        "full_contexts": context_parts,
         "model": model,
         "rewritten_query": rewritten_query,
         "before": before_list,
