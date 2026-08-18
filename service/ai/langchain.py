@@ -1549,8 +1549,10 @@ def _persist_trace(
             graph_name=graph_name,
             thread_id=state.get("threadId") or state.get("thread_id"),
             user_id=state.get("user_id"),
-            input_summary=(state.get("query") or state.get("input_text") or "")[:2000],
-            output_summary=(final_state.get("response") or "")[:2000],
+            # 输入/输出是回流分析的底子，截断上限放宽到 15000（TEXT 列 65535 字节，utf8mb4 最坏
+            # 4 字节/字符时安全上限约 16383 字符），避免长回答被 2000 字符截断丢信息
+            input_summary=(state.get("query") or state.get("input_text") or "")[:15000],
+            output_summary=(final_state.get("response") or "")[:15000],
             status="error" if error else "success",
             error_message=error,
             total_steps=len(steps),
@@ -1600,6 +1602,31 @@ def submit_trace_feedback(trace_id: int, rating: str, note: str = "") -> bool:
         session.close()
 
 
+def mark_trace_copied(trace_id: int) -> bool:
+    """
+    【回流机制】隐式反馈采集：用户复制了这次回答，说明答案至少"有用到可以复制走"，
+    跟点赞点踩一样是回流信号，但不需要用户主动评价——复制动作本身已经是信号。
+    返回 True/False 表示是否成功命中并更新了一条记录。
+    """
+    from app.database import SessionLocal
+    from model.ai.agent_trace import AgentTrace
+
+    session = SessionLocal()
+    try:
+        row = session.query(AgentTrace).filter(AgentTrace.id == trace_id).first()
+        if row is None:
+            return False
+        row.copied = True
+        session.commit()
+        return True
+    except Exception:
+        logger.exception("trace 复制信号写入失败")
+        session.rollback()
+        return False
+    finally:
+        session.close()
+
+
 def list_traces(graph_name: str | None = None, status: str | None = None, limit: int = 50) -> list[dict]:
     """
     【可观测性】全量查询入口：不像 list_bad_cases 那样只挑 error/bad，这里是"这段时间到底
@@ -1632,6 +1659,7 @@ def list_traces(graph_name: str | None = None, status: str | None = None, limit:
                 "steps_detail": r.steps_detail,
                 "feedback": r.feedback,
                 "feedback_note": r.feedback_note,
+                "copied": bool(r.copied),
                 "created_at": r.create_at.isoformat() if r.create_at else None,
             }
             for r in rows
@@ -1670,6 +1698,7 @@ def list_bad_cases(graph_name: str | None = None, limit: int = 50) -> list[dict]
                 "error_message": r.error_message,
                 "feedback": r.feedback,
                 "feedback_note": r.feedback_note,
+                "copied": bool(r.copied),
                 "created_at": r.create_at.isoformat() if r.create_at else None,
             }
             for r in rows
@@ -1679,7 +1708,7 @@ def list_bad_cases(graph_name: str | None = None, limit: int = 50) -> list[dict]
 
 
 # ---------------------------------------------------------------------------
-# HTTP 视图：供 routes/ai.py 注册 【回流机制】的两个端点
+# HTTP 视图：供 routes/ai.py 注册 【回流机制】的三个端点
 # ---------------------------------------------------------------------------
 
 
@@ -1698,6 +1727,18 @@ def trace_feedback_api(request: Request):
     if not ok:
         return ({"code": 404, "msg": f"未找到 trace: {trace_id}", "data": None}, 404)
     return {"code": 0, "msg": "ok", "data": {"traceId": trace_id, "rating": rating}}
+
+
+def trace_copy_api(request: Request):
+    """POST /ai/langgraph/trace/copy  body: {traceId}  隐式反馈：用户复制了这次回答"""
+    body = anyio.from_thread.run(read_json_optional, request) or {}
+    trace_id = body.get("traceId") or body.get("trace_id")
+    if not trace_id:
+        return ({"code": 400, "msg": "缺少参数: traceId", "data": None}, 400)
+    ok = mark_trace_copied(int(trace_id))
+    if not ok:
+        return ({"code": 404, "msg": f"未找到 trace: {trace_id}", "data": None}, 404)
+    return {"code": 0, "msg": "ok", "data": {"traceId": trace_id}}
 
 
 def trace_list_api(request: Request):

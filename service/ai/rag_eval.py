@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 _async_client: AsyncOpenAI | None = None
 _llm = None
 _embeddings = None
+_zh_prompts_by_synthesizer: dict = {}
 
 
 def _get_evaluator():
@@ -50,6 +51,30 @@ def _get_evaluator():
             "openai", model=DEFAULT_EMBEDDING_MODEL, client=_async_client, interface="modern"
         )
     return _llm, _embeddings
+
+
+async def _get_zh_prompts_by_synthesizer(llm) -> dict:
+    """
+    默认 query synthesizer（single_hop_specific / multi_hop_abstract / multi_hop_specific）
+    的 prompt 模板自带英文 few-shot 示例，即便源文档是中文也会把输出带偏成英文，光加一句
+    中文提示词（llm_context）压不住。用 adapt_prompts 把模板连示例一起翻译成中文，按类名
+    缓存，跨请求复用，避免每次都重新翻译。
+
+    刻意缓存"翻译后的 prompts"而不是缓存 synthesizer 实例/distribution 本身——
+    default_query_distribution(llm, kg) 会按每次请求实际构建出的知识图谱是否存在可用的
+    实体关系簇（cluster）来决定是否启用 multi_hop 系列，chunk 数少或语义稀疏时经常没有
+    可用簇；如果直接复用一份写死的 distribution，等于绕过了这个按 kg 过滤的逻辑，会导致
+    multi_hop synthesizer 在没有簇的知识图谱上报错
+    "No relationships match the provided condition. Cannot form clusters."（已实测触发）。
+    """
+    global _zh_prompts_by_synthesizer
+    if not _zh_prompts_by_synthesizer:
+        from ragas.testset.synthesizers import default_query_distribution
+
+        for synthesizer, _weight in default_query_distribution(llm):
+            adapted = await synthesizer.adapt_prompts("chinese", llm=llm)
+            _zh_prompts_by_synthesizer[type(synthesizer).__name__] = adapted
+    return _zh_prompts_by_synthesizer
 
 
 async def evaluate_sample(
@@ -197,28 +222,54 @@ def _fetch_kb_chunks(kb_id: int, limit: int = MAX_TESTSET_CHUNKS) -> list[str]:
 
 def _generate_testset(kb_id: int, size: int) -> list[dict]:
     """
-    调 RAGAS TestsetGenerator.generate_with_chunks 生成测试集。
+    调 RAGAS TestsetGenerator 生成测试集。
     刻意写成同步函数、直接调用，不包一层 async/anyio.from_thread.run——
-    generate_with_chunks 本身是同步方法，内部会自己起一个 event loop 跑里面一堆异步
+    generate/apply_transforms 底层会自己起一个 event loop 跑里面一堆异步
     LLM 调用；如果从已经在跑的 event loop（anyio.from_thread.run 桥接过去的那个）里调它，
     会触发"loop 套 loop"死锁，实测直接卡死不报错，很隐蔽。跟 rag_chat 一样直接同步调用即可。
     输出列名（实测确认，不是文档直接抄的——RAGAS 各版本字段名变过）：
     user_input=问题，reference=标准答案，reference_contexts=生成时依据的原文片段列表，
     synthesizer_name=生成方式（single_hop_specific/multi_hop_abstract 等，multi_hop 的题
     需要综合多个片段才能回答，比 single_hop 更难）。
-    观测到生成器偶尔会出英文问题（即便源文档是中文）——是 persona/query 合成阶段的正常
-    行为，不是 bug，这里不做语言过滤，如实入库。
+    默认 query synthesizer 的 prompt 模板自带英文 few-shot 示例，即便源文档是中文，模型也
+    会偏向生成英文问答——用 _get_zh_prompts_by_synthesizer 把模板连示例一起翻译成中文再用。
+    这里没有直接调 generate_with_chunks（它内部会用没翻译过的默认 distribution），而是手动
+    重复它构建知识图谱、跑 transforms 那部分逻辑，为的是能拿到构建好的知识图谱去调
+    default_query_distribution(llm, kg) ——只有这样 multi_hop synthesizer 才会按这个知识库
+    实际有没有可用的实体关系簇来决定要不要启用，跟 generate_with_chunks 内部行为保持一致。
     """
     from langchain_core.documents import Document
+    from ragas.run_config import RunConfig
+    from ragas.testset.graph import KnowledgeGraph, Node, NodeType
+    from ragas.testset.synthesizers import default_query_distribution
     from ragas.testset.synthesizers.generate import TestsetGenerator
+    from ragas.testset.transforms import apply_transforms, default_transforms_for_prechunked
 
     texts = _fetch_kb_chunks(kb_id)
     if not texts:
         raise ValueError("该知识库没有可用的分段文本，请先完成文档解析和向量化")
     llm, embeddings = _get_evaluator()
-    chunks = [Document(page_content=t) for t in texts]
-    generator = TestsetGenerator(llm=llm, embedding_model=embeddings)
-    testset = generator.generate_with_chunks(chunks=chunks, testset_size=size)
+    zh_prompts = asyncio.run(_get_zh_prompts_by_synthesizer(llm))
+
+    nodes = [
+        Node(type=NodeType.CHUNK, properties={"page_content": t, "document_metadata": {}})
+        for t in texts
+        if t.strip()
+    ]
+    kg = KnowledgeGraph(nodes=nodes)
+    apply_transforms(
+        kg, default_transforms_for_prechunked(llm=llm, embedding_model=embeddings), run_config=RunConfig()
+    )
+
+    generator = TestsetGenerator(llm=llm, embedding_model=embeddings, knowledge_graph=kg)
+    query_distribution = default_query_distribution(llm, kg)
+    for synthesizer, _weight in query_distribution:
+        prompts = zh_prompts.get(type(synthesizer).__name__)
+        if prompts:
+            synthesizer.set_prompts(**prompts)
+        synthesizer.llm_context = "请用简体中文生成问题和参考答案，不要出现英文。"
+
+    testset = generator.generate(testset_size=size, query_distribution=query_distribution)
     df = testset.to_pandas()
     items = []
     for _, row in df.iterrows():
@@ -327,6 +378,126 @@ def list_testset_api(request: Request):
             for r in rows
         ]
         return {"code": 0, "msg": "ok", "data": {"items": items, "total": len(items)}}
+    finally:
+        session.close()
+
+
+def _testset_item_to_dict(r) -> dict:
+    return {
+        "id": r.id,
+        "kb_id": r.kb_id,
+        "kb_name": r.kb_name,
+        "question": r.question,
+        "ground_truth": r.ground_truth,
+        "source_context": r.source_context,
+        "synthesizer": r.synthesizer,
+        "created_at": r.create_at.isoformat() if r.create_at else None,
+    }
+
+
+def create_testset_item_api(request: Request):
+    """
+    POST /ai/rag/testset/create  body: {kb_id, question, ground_truth, source_context?}
+    手动补一条测试集数据（不经过 RAGAS 生成），synthesizer 固定标成 manual，跟自动生成的
+    区分开，批量评测/展示逻辑不用改。
+    """
+    data = anyio.from_thread.run(read_json_optional, request) or {}
+    kb_id = data.get("kb_id")
+    if not kb_id:
+        raise ValueError("请提供 kb_id")
+    try:
+        kb_id = int(kb_id)
+    except (TypeError, ValueError):
+        raise ValueError("kb_id 必须为数字")
+    question = (data.get("question") or "").strip()
+    ground_truth = (data.get("ground_truth") or "").strip()
+    if not question or not ground_truth:
+        raise ValueError("请提供 question 和 ground_truth")
+    source_context = (data.get("source_context") or "").strip() or None
+
+    from app.database import SessionLocal
+    from model.ai import KnowledgeBase
+    from model.ai.rag_testset import RagTestsetItem
+
+    kb = KnowledgeBase.get_by_id(kb_id)
+    kb_name = kb.name if kb else None
+
+    session = SessionLocal()
+    try:
+        row = RagTestsetItem(
+            kb_id=kb_id,
+            kb_name=kb_name,
+            question=question,
+            ground_truth=ground_truth,
+            source_context=source_context,
+            synthesizer="manual",
+        )
+        session.add(row)
+        session.commit()
+        session.refresh(row)
+        return {"code": 0, "msg": "ok", "data": _testset_item_to_dict(row)}
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def update_testset_item_api(request: Request, item_id: int):
+    """
+    PUT /ai/rag/testset/{item_id}  body: {question?, ground_truth?, source_context?}
+    只改传了的字段，没传的保持原样——用来人工修正 RAGAS 生成的问答对。
+    """
+    data = anyio.from_thread.run(read_json_optional, request) or {}
+
+    from app.database import SessionLocal
+    from model.ai.rag_testset import RagTestsetItem
+
+    session = SessionLocal()
+    try:
+        row = session.query(RagTestsetItem).filter(RagTestsetItem.id == item_id).first()
+        if not row:
+            raise FileNotFoundError("测试集数据不存在")
+
+        if "question" in data:
+            question = (data.get("question") or "").strip()
+            if not question:
+                raise ValueError("question 不能为空")
+            row.question = question
+        if "ground_truth" in data:
+            ground_truth = (data.get("ground_truth") or "").strip()
+            if not ground_truth:
+                raise ValueError("ground_truth 不能为空")
+            row.ground_truth = ground_truth
+        if "source_context" in data:
+            row.source_context = (data.get("source_context") or "").strip() or None
+
+        session.commit()
+        session.refresh(row)
+        return {"code": 0, "msg": "ok", "data": _testset_item_to_dict(row)}
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def delete_testset_item_api(request: Request, item_id: int):
+    """DELETE /ai/rag/testset/{item_id}  硬删——测试集数据没有下游引用，不用软删。"""
+    from app.database import SessionLocal
+    from model.ai.rag_testset import RagTestsetItem
+
+    session = SessionLocal()
+    try:
+        row = session.query(RagTestsetItem).filter(RagTestsetItem.id == item_id).first()
+        if not row:
+            raise FileNotFoundError("测试集数据不存在")
+        session.delete(row)
+        session.commit()
+        return {"code": 0, "msg": "ok", "data": {"id": item_id}}
+    except Exception:
+        session.rollback()
+        raise
     finally:
         session.close()
 

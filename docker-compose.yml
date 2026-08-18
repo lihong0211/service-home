@@ -1,0 +1,26 @@
+services:
+  service-home:
+    build: .
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    environment:
+      # MySQL 跑在宿主机上（不是容器里），容器内 "localhost" 指向容器自己，
+      # 必须显式指向宿主机；AI_DB_HOST 没单独设置时会回退到 DB_HOST（见 config/db.py）。
+      # host.docker.internal 是 Docker Desktop（Mac/Windows）内置的宿主机域名，Linux 需要
+      # 额外的 extra_hosts（已在下面加了 host-gateway 兼容）。
+      DB_HOST: host.docker.internal
+      # DASHSCOPE_API_KEY 只在 ~/.zshrc 里，不在 .env，用启动命令里 export 的方式传入
+      # （见下方"启动方式"注释），这里留空占位，compose 会用运行时环境变量覆盖。
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./data:/app/data
+      - ./lora:/app/lora
+      - ./workspace:/app/workspace
+    restart: unless-stopped
+
+# 启动方式（DASHSCOPE_API_KEY 只在 zshrc 里，docker compose 读不到，需要显式 source 后再起）：
+#   zsh -ic 'source ~/.zshrc && docker compose up -d --build'

@@ -15,14 +15,14 @@ A2A 内容生成链编排器（Client Agent / Host Agent）
 """
 from __future__ import annotations
 
+import asyncio
 import json
-import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Generator
+from typing import AsyncGenerator
 
-import requests
+import httpx
 
 from fastapi import Request
 from fastapi.responses import StreamingResponse
@@ -47,28 +47,28 @@ def _now() -> str:
 
 # ---------- A2A 客户端工具函数 ----------
 
-def _send_message(agent_name: str, message: Message) -> Task:
+async def _send_message(agent_name: str, message: Message) -> Task:
     """向远程 Agent 发送消息（POST /tasks/send），返回 Task 对象。"""
     req = SendMessageRequest(message=message)
-    r = requests.post(
-        f"{agent_url(agent_name)}/tasks/send",
-        json=req.model_dump(),
-        timeout=_SEND_TIMEOUT_SECONDS,
-    )
+    async with httpx.AsyncClient(timeout=httpx.Timeout(_SEND_TIMEOUT_SECONDS)) as client:
+        r = await client.post(
+            f"{agent_url(agent_name)}/tasks/send",
+            json=req.model_dump(),
+        )
     r.raise_for_status()
     return Task(**r.json())
 
 
-def _send_message_with_retry(agent_name: str, message: Message) -> Task:
+async def _send_message_with_retry(agent_name: str, message: Message) -> Task:
     """网络错误/超时时按退避间隔重试；重试耗尽后抛出最后一次异常，由调用方降级处理。"""
     last_error: Exception | None = None
     for attempt in range(_RETRY_ATTEMPTS):
         try:
-            return _send_message(agent_name, message)
-        except requests.exceptions.RequestException as e:
+            return await _send_message(agent_name, message)
+        except httpx.HTTPError as e:
             last_error = e
             if attempt < _RETRY_ATTEMPTS - 1:
-                time.sleep(_RETRY_BACKOFF_SECONDS * (attempt + 1))
+                await asyncio.sleep(_RETRY_BACKOFF_SECONDS * (attempt + 1))
     raise last_error
 
 
@@ -165,14 +165,17 @@ class ChainRun:
         run._resume_answer = answer
         return run
 
-    def run_events(self):
+    async def run_events(self):
         if self._resume_agent:
             parts = [TextPart(text=self._resume_answer)]
             if self.latest_data:
                 parts.append(DataPart(data=self.latest_data))
-            ok = yield from self._call_step(
-                self._resume_agent, parts, is_resume=True, resume_task_id=self._resume_task_id)
-            if not ok:
+            last_event = None
+            async for event in self._call_step(
+                    self._resume_agent, parts, is_resume=True, resume_task_id=self._resume_task_id):
+                yield event
+                last_event = event
+            if last_event["type"] != "step_done":
                 return
 
         while len(self.completed_agents) < MAX_STEPS:
@@ -184,8 +187,11 @@ class ChainRun:
             parts = [TextPart(text=self.topic)]
             if self.latest_data:
                 parts.append(DataPart(data=self.latest_data))
-            ok = yield from self._call_step(next_agent, parts)
-            if not ok:
+            last_event = None
+            async for event in self._call_step(next_agent, parts):
+                yield event
+                last_event = event
+            if last_event["type"] != "step_done":
                 return
 
         self.final_task = self.tasks[-1] if self.tasks else _failed_task(self.context_id, "未完成任何步骤")
@@ -196,8 +202,8 @@ class ChainRun:
             "data": self.latest_data,
         }
 
-    def _call_step(self, agent_name: str, parts: list, is_resume: bool = False, resume_task_id: str | None = None):
-        """执行单步调用。返回 True 表示继续主循环，False 表示链路已结束（完成/暂停/失败）。"""
+    async def _call_step(self, agent_name: str, parts: list, is_resume: bool = False, resume_task_id: str | None = None):
+        """执行单步调用，产出事件；调用方通过最后一条事件的 type 是否为 step_done 判断是否继续主循环。"""
         step_index = len(self.chain) + 1
         yield {"type": "step_start", "step": step_index, "agent": agent_name}
 
@@ -215,12 +221,12 @@ class ChainRun:
             # 续接时带上原 taskId，让 Agent 能识别这是对同一个 input-required
             # 任务的回答，而不是一次新的调用（标准 A2A 任务续接语义）。
             msg = Message(role="user", parts=parts, contextId=self.context_id, taskId=resume_task_id)
-            task = _send_message_with_retry(agent_name, msg)
+            task = await _send_message_with_retry(agent_name, msg)
         except Exception as e:
             step.status, step.ended_at, step.error_message = "failed", _now(), str(e)
             self.final_task = _failed_task(self.context_id, str(e))
             yield {"type": "chain_error", "step": step_index, "agent": agent_name, "error": str(e)}
-            return False
+            return
 
         data = _extract_data_from_task(task)
         step.status, step.ended_at = task.status.state, _now()
@@ -237,44 +243,43 @@ class ChainRun:
             self.final_task = task
             yield {"type": "chain_paused", "step": step_index, "agent": agent_name,
                    "context_id": self.context_id, "message": _extract_prompt(task)}
-            return False
+            return
 
         if task.status.state != "completed" or data is None:
             step.status = "failed"
             self.final_task = task
             yield {"type": "chain_error", "step": step_index, "agent": agent_name, "error": "no artifact"}
-            return False
+            return
 
         step.output_summary = _short_summary(data) or agent_name
         self.completed_agents.append(agent_name)
         self.latest_data = data
         yield {"type": "step_done", "step": step_index, "agent": agent_name,
                "status": step.status, "data": data}
-        return True
 
 
-def run_chain(topic: str) -> OrchestrationResult:
+async def run_chain(topic: str) -> OrchestrationResult:
     """执行动态路由链（Host Agent 逐步决定下一个 Agent），直到完成或暂停/失败。"""
     run = ChainRun(topic)
-    for _ in run.run_events():
+    async for _ in run.run_events():
         pass
     return OrchestrationResult(chain=run.chain, tasks=run.tasks, final_task=run.final_task)
 
 
-def resume_chain(context_id: str, answer: str) -> OrchestrationResult:
+async def resume_chain(context_id: str, answer: str) -> OrchestrationResult:
     """为处于 input-required 状态的会话补充信息并继续执行。"""
     paused = _paused_sessions.pop(context_id, None)
     if paused is None:
         raise KeyError(f"未找到待续处理的会话: {context_id}")
     run = ChainRun.from_paused(paused, answer)
-    for _ in run.run_events():
+    async for _ in run.run_events():
         pass
     return OrchestrationResult(chain=run.chain, tasks=run.tasks, final_task=run.final_task)
 
 
 # ---------- SSE 流式链路 ----------
 
-def stream_chain(topic: str) -> Generator[str, None, None]:
+async def stream_chain(topic: str) -> AsyncGenerator[str, None]:
     """
     SSE 生成器：每完成一个 Agent 步骤就推送一条事件。
 
@@ -294,21 +299,21 @@ def stream_chain(topic: str) -> Generator[str, None, None]:
         return f"data: {json.dumps(wire, ensure_ascii=False)}\n\n"
 
     run = ChainRun(topic)
-    for event in run.run_events():
+    async for event in run.run_events():
         yield emit(event)
     yield "data: [DONE]\n\n"
 
 
 # ---------- 供路由层使用 ----------
 
-def get_result_for_frontend(topic: str) -> dict:
+async def get_result_for_frontend(topic: str) -> dict:
     """
     执行链，把结果转换为前端可展示的 JSON。
     chain：调用链（每步 agent、状态、时间）
     tasks：每步的完整 Task（含 artifacts），前端可展示每步输出
     final_task：最后一步的 Task
     """
-    result = run_chain(topic)
+    result = await run_chain(topic)
     return result.model_dump()
 
 
@@ -324,7 +329,7 @@ async def a2a_chain_api(request: Request):
     if not topic:
         return ({"code": 400, "msg": "缺少参数: topic", "data": None}, 400)
     try:
-        data = get_result_for_frontend(topic)
+        data = await get_result_for_frontend(topic)
         return {"code": 0, "msg": "ok", "data": data}
     except Exception as e:
         return ({"code": 500, "msg": str(e), "data": None}, 500)
@@ -338,7 +343,7 @@ async def a2a_chain_resume_api(request: Request):
     if not context_id or not answer:
         return ({"code": 400, "msg": "缺少参数: context_id / answer", "data": None}, 400)
     try:
-        result = resume_chain(context_id, answer)
+        result = await resume_chain(context_id, answer)
         return {"code": 0, "msg": "ok", "data": result.model_dump()}
     except KeyError as e:
         return ({"code": 404, "msg": e.args[0] if e.args else str(e), "data": None}, 404)
@@ -366,5 +371,5 @@ async def a2a_chain_stream_api(request: Request):
 
 if __name__ == "__main__":
     import json as _json
-    out = get_result_for_frontend("A2A 协议简介")
+    out = asyncio.run(get_result_for_frontend("A2A 协议简介"))
     print(_json.dumps(out, ensure_ascii=False, indent=2))

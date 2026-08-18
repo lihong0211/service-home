@@ -19,6 +19,7 @@ from service.ai.langchain import (
     trace_feedback_api,
     trace_bad_cases_api,
     trace_list_api,
+    trace_copy_api,
     saga_demo_api,
 )
 from service.ai.agent import (
@@ -87,6 +88,9 @@ from service.ai.rag_eval import (
     evaluate_rag_api,
     generate_testset_api,
     list_testset_api,
+    create_testset_item_api,
+    update_testset_item_api,
+    delete_testset_item_api,
     batch_evaluate_api,
 )
 from service.ai.bm25_es import bm25_sync_api
@@ -318,6 +322,9 @@ def register_ai(router: APIRouter):
     # RAGAS 测试集自动生成 + 批量回归评测，见 service/ai/rag_eval.py
     _ai_route(router, "/ai/rag/testset/generate", generate_testset_api, ["POST"])
     _ai_route(router, "/ai/rag/testset/list", list_testset_api, ["GET"])
+    _ai_route(router, "/ai/rag/testset/create", create_testset_item_api, ["POST"])
+    _ai_route(router, "/ai/rag/testset/{item_id}", update_testset_item_api, ["PUT"], ["item_id"], {"item_id": int})
+    _ai_route(router, "/ai/rag/testset/{item_id}", delete_testset_item_api, ["DELETE"], ["item_id"], {"item_id": int})
     _ai_route(router, "/ai/rag/testset/evaluate", batch_evaluate_api, ["POST"])
     _ai_route(router, "/ai/text2sql", text2sql_api, ["POST"])
     # 写操作 SQL 走人工审核（interrupt/resume），跟 HITL 演示图同一套机制，见 service/ai/text2sql.py
@@ -336,6 +343,8 @@ def register_ai(router: APIRouter):
     _ai_route(router, "/ai/langgraph/run", langgraph_run_api, ["POST"])
     # 【回流机制】反馈采集 + bad case 查询，见 service/ai/langchain.py 对应函数注释
     _ai_route(router, "/ai/langgraph/trace/feedback", trace_feedback_api, ["POST"])
+    # 隐式反馈：答案被复制，与显式 good/bad 反馈同属回流采集入口
+    _ai_route(router, "/ai/langgraph/trace/copy", trace_copy_api, ["POST"])
     _ai_route(router, "/ai/langgraph/trace/bad-cases", trace_bad_cases_api, ["GET"])
     # 【可观测性】全量 trace 列表（不限 status/feedback），见 service/ai/langchain.py 的 list_traces
     _ai_route(router, "/ai/langgraph/trace/list", trace_list_api, ["GET"])

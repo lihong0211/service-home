@@ -279,8 +279,10 @@ def _persist_rag_trace(question: str, answer: str, duration_ms: int, error: str 
     try:
         row = AgentTrace(
             graph_name="rag",
-            input_summary=(question or "")[:2000],
-            output_summary=(answer or "")[:2000],
+            # 截断上限放宽到 15000，避免长回答丢信息（TEXT 列安全上限约 16383 字符），
+            # 与 langchain.py 的 _persist_trace 保持一致
+            input_summary=(question or "")[:15000],
+            output_summary=(answer or "")[:15000],
             status="error" if error else "success",
             error_message=error,
             duration_ms=duration_ms,

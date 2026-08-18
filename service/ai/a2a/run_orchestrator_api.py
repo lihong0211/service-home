@@ -17,7 +17,7 @@ class RunChainRequest(BaseModel):
 
 
 @app.post("/ai/a2a/chain")
-def run_chain_api(body: RunChainRequest):
+async def run_chain_api(body: RunChainRequest):
     """
     执行 大纲→正文→摘要 链，返回结构：
     - chain: 调用链（每步 agent、状态、时间等），供前端展示流水线
@@ -26,7 +26,7 @@ def run_chain_api(body: RunChainRequest):
     （与主程序路由 POST /ai/a2a/chain 一致，可单独跑本服务时使用）
     """
     try:
-        return get_result_for_frontend(body.topic)
+        return await get_result_for_frontend(body.topic)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

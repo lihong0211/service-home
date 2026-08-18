@@ -736,15 +736,25 @@ def parse_file_to_documents(
     chunking_strategy: str = "fixed",
     hierarchy_level: int = 3,
     retain_hierarchy: bool = True,
+    parsing_strategy: str = "fast",
 ) -> list[dict]:
     """
     按扩展名解析文件为分段列表。chunking_strategy: fixed（默认，兼容旧值 custom）/ structure（标题层级，
     DOCX/MD 有效）/ hierarchy（父子切片，DOCX/MD 有效）/ semantic（语义切片，除 PPTX 外均有效）。
     PDF/PPTX/Excel/图片无可靠标题结构，structure/hierarchy 对这些格式回退为 fixed。
+    parsing_strategy: fast（默认，本函数下方这套轻量解析）/ precise（委托 knowledge_mineru.py 用 MinerU
+    解析，仅 PDF/DOCX/PPTX/XLSX/XLS/图片支持，其余扩展名忽略 precise、仍走 fast）。
     支持 .pdf / .docx / .pptx / .txt / .md。
     每项 {"id": str, "text": str, "category": str, "metadata"?: dict}。
     """
     fn = (filename or "").lower()
+    if parsing_strategy == "precise":
+        from service.ai.knowledge_mineru import is_mineru_supported, parse_file_to_documents_mineru
+        if is_mineru_supported(fn):
+            return parse_file_to_documents_mineru(
+                file_path, filename, chunk_size=chunk_size, chunk_overlap=chunk_overlap,
+                chunking_strategy=chunking_strategy, hierarchy_level=hierarchy_level, retain_hierarchy=retain_hierarchy,
+            )
     if fn.endswith(".pdf"):
         return _documents_from_pdf(file_path, chunk_size=chunk_size, chunk_overlap=chunk_overlap, chunking_strategy=chunking_strategy)
     if fn.endswith(".doc"):
@@ -1119,6 +1129,7 @@ def _resegment_one_document(
     chunking_strategy: str = "fixed",
     hierarchy_level: int = 3,
     retain_hierarchy: bool = True,
+    parsing_strategy: str = "fast",
 ) -> int:
     """对单个文档按 path 重新解析并替换分段，返回新分段数量。"""
     from model.ai import KnowledgeBaseDocument, KnowledgeBaseSegment
@@ -1132,6 +1143,7 @@ def _resegment_one_document(
     documents = parse_file_to_documents(
         path, fn, chunk_size=chunk_size, chunk_overlap=chunk_overlap,
         chunking_strategy=chunking_strategy, hierarchy_level=hierarchy_level, retain_hierarchy=retain_hierarchy,
+        parsing_strategy=parsing_strategy,
     )
     if not documents:
         return 0
@@ -1179,12 +1191,21 @@ def _parse_chunking_strategy_params(data: dict) -> tuple[str, int, bool]:
     return chunking_strategy, hierarchy_level, retain_hierarchy
 
 
+def _parse_parsing_strategy_param(data: dict) -> str:
+    """从请求体解析 parsing_strategy（fast/precise），带校验与默认值。"""
+    parsing_strategy = (data.get("parsing_strategy") or "fast").strip()
+    if parsing_strategy not in ("fast", "precise"):
+        raise ValueError("parsing_strategy 仅支持 fast/precise")
+    return parsing_strategy
+
+
 def execute_segments_api(request: Request):
     """
     执行分段并落库（不向量化）。使用文档列表 + 分层参数（分段长度、分段重叠、分段策略）。
     两种用法：
     1）对已入库文档列表批量重新分段：body 传 document_ids（数组）+ chunk_size/chunk_overlap +
-       可选 chunking_strategy（fixed/structure/hierarchy/semantic，默认 fixed）/hierarchy_level/retain_hierarchy，
+       可选 chunking_strategy（fixed/structure/hierarchy/semantic，默认 fixed）/hierarchy_level/retain_hierarchy/
+       parsing_strategy（fast/precise，默认 fast；precise 用 MinerU，仅 PDF/DOCX/PPTX/XLSX/XLS/图片支持），
        对每个文档按 path 重新解析并替换分段。
     2）对已上传文件执行分段并加入知识库：body 传 kb_id + file_id + file_name + 同上可选参数。
     POST body: JSON，如 { "document_ids": [1, 2], "chunk_size": 1000, "chunk_overlap": 200, "chunking_strategy": "structure" }
@@ -1203,6 +1224,7 @@ def execute_segments_api(request: Request):
     chunk_size = max(100, min(4000, chunk_size))
     chunk_overlap = max(0, min(chunk_size - 1, chunk_overlap))
     chunking_strategy, hierarchy_level, retain_hierarchy = _parse_chunking_strategy_params(data)
+    parsing_strategy = _parse_parsing_strategy_param(data)
 
     if document_ids is not None:
         # 文档列表 + 分层参数：批量重新分段
@@ -1222,6 +1244,7 @@ def execute_segments_api(request: Request):
                 cnt = _resegment_one_document(
                     did, chunk_size, chunk_overlap,
                     chunking_strategy=chunking_strategy, hierarchy_level=hierarchy_level, retain_hierarchy=retain_hierarchy,
+                    parsing_strategy=parsing_strategy,
                 )
                 results.append({"document_id": did, "segment_count": cnt})
             except FileNotFoundError as e:
@@ -1234,6 +1257,7 @@ def execute_segments_api(request: Request):
                 "chunk_size": chunk_size,
                 "chunk_overlap": chunk_overlap,
                 "chunking_strategy": chunking_strategy,
+                "parsing_strategy": parsing_strategy,
             },
         })
 
@@ -1250,6 +1274,7 @@ def execute_segments_api(request: Request):
         documents = parse_file_to_documents(
             file_path, file_name, chunk_size=chunk_size, chunk_overlap=chunk_overlap,
             chunking_strategy=chunking_strategy, hierarchy_level=hierarchy_level, retain_hierarchy=retain_hierarchy,
+            parsing_strategy=parsing_strategy,
         )
         if not documents:
             raise ValueError("文件中未解析出有效内容")
@@ -1269,7 +1294,7 @@ def upload_knowledge_base_api(request: Request):
     knowledge_base_document + knowledge_base_segment，不自动向量化；需要检索时再调 POST /ai/knowledge-base/vectorize。
     支持 PDF/DOCX/TXT/MD。可一次传多个 file（多选），或单个 file。可追加到已有知识库（kb_id/kb_name）或新建知识库（name）。
     POST multipart/form-data: file 或 file[]（可多个）, name 或 kb_id/kb_name,
-    description/chunk_size/chunk_overlap/chunking_strategy/hierarchy_level/retain_hierarchy 可选。
+    description/chunk_size/chunk_overlap/chunking_strategy/hierarchy_level/retain_hierarchy/parsing_strategy 可选。
     """
     import tempfile
     from sqlalchemy.exc import IntegrityError
@@ -1328,6 +1353,7 @@ def upload_knowledge_base_api(request: Request):
     chunk_size = max(100, min(4000, chunk_size))
     chunk_overlap = max(0, min(chunk_size - 1, chunk_overlap))
     chunking_strategy, hierarchy_level, retain_hierarchy = _parse_chunking_strategy_params(form)
+    parsing_strategy = _parse_parsing_strategy_param(form)
     tmp_paths = []
     try:
         if kb_id is None:
@@ -1394,6 +1420,7 @@ def upload_knowledge_base_api(request: Request):
                     documents = parse_file_to_documents(
                     tmp_path, fn, chunk_size=chunk_size, chunk_overlap=chunk_overlap,
                     chunking_strategy=chunking_strategy, hierarchy_level=hierarchy_level, retain_hierarchy=retain_hierarchy,
+                    parsing_strategy=parsing_strategy,
                 )
                 except Exception as parse_err:
                     # 解析失败但文件已保存，创建文档记录（无分段）
