@@ -96,6 +96,11 @@ from service.ai.text2sql import (
     text2sql_resume_api,
     table_data_api,
 )
+from service.ai.review import (
+    list_review_tasks_api,
+    approve_review_task_api,
+    reject_review_task_api,
+)
 from service.ai.files import upload_file_api, list_files_api, preview_file_api
 from service.ai.vector_db_qdrant import (
     list_api as vector_db_list_api,
@@ -318,6 +323,10 @@ def register_ai(router: APIRouter):
     # 写操作 SQL 走人工审核（interrupt/resume），跟 HITL 演示图同一套机制，见 service/ai/text2sql.py
     _ai_route(router, "/ai/text2sql/run", text2sql_hitl_api, ["POST"])
     _ai_route(router, "/ai/text2sql/resume", text2sql_resume_api, ["POST"])
+    # 集中审核列表：text2sql/hitl 命中 interrupt 时落的待审核记录，见 service/ai/review.py
+    _ai_route(router, "/ai/review/list", list_review_tasks_api, ["GET"])
+    _ai_route(router, "/ai/review/{task_id}/approve", approve_review_task_api, ["POST"], ["task_id"], {"task_id": int})
+    _ai_route(router, "/ai/review/{task_id}/reject", reject_review_task_api, ["POST"], ["task_id"], {"task_id": int})
     _ai_route(router, "/ai/table-data", table_data_api, ["GET", "POST"])
     _ai_route(router, "/ai/files/upload", upload_file_api, ["POST"])
     _ai_route(router, "/ai/files/list", list_files_api, ["GET"])

@@ -10,6 +10,7 @@ from .video_gen_task import VideoGenTask
 from .agent_trace import AgentTrace
 from .agent_booking import AgentBooking
 from .rag_testset import RagTestsetItem
+from .agent_review_task import AgentReviewTask
 
 __all__ = [
     "VectorDb",
@@ -23,4 +24,5 @@ __all__ = [
     "AgentTrace",
     "AgentBooking",
     "RagTestsetItem",
+    "AgentReviewTask",
 ]

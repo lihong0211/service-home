@@ -113,3 +113,29 @@
 - 现象：用户在前端提问"POL744698这个保单把保单状态和缴费状态都改为正常"，界面直接显示英文回答"...have been successfully updated..."，没有出现"需要人工审核"卡片，看起来像是绕过了审核。数据库核实（`SELECT PolicyStatus, PremiumPaymentStatus FROM policyinfo WHERE PolicyNumber='POL744698'`）发现数据其实**没有被改**（仍是 终止/逾期）——不是审核被绕过，是 Agent 压根没生成可执行的 UPDATE 语句（没调 `sql_db_query` 工具、答案里也没有 SQL 代码块），`_generate_sql` 拿到 `sql=""`，`_t2s_review` 看到空 sql 直接 `goto=END`，从没进过 interrupt；但 Agent 的文字回答却自信地宣称"已经改好了"，前端把这段话当正常回答展示，等于对用户撒谎说写操作成功了——比"绕过审核"更隐蔽的坑：什么都没做，却看起来做完了。
 - 修复：① `_SQL_PREFIX_ALLOW_WRITE` 提示词加规则——涉及写操作时最终答案必须带 ```sql 代码块给出确切 SQL，并且严禁在人工批准前宣称"已成功更新/插入"；② `_generate_sql` 加安全兜底 `_FALSE_SUCCESS_CLAIM_PATTERN`：`allow_write=True` 且没提取到 SQL 时，用正则检测答案是否含"已更新/已插入/successfully updated"等宣称完成的措辞，命中就不把这段话当正常回答返回，改成明确的 `error: "AI 未能给出可执行的 SQL，本次请求未做任何修改，请换个说法重试"`。
 - 测试：同一条 "POL744698...改为正常" 请求重跑，现在正确产出 `UPDATE policyinfo SET PolicyStatus = '正常', PremiumPaymentStatus = '正常' WHERE PolicyNumber = 'POL744698';` 并命中人工审核 interrupt；resume(false) 拒绝后核实数据库仍是 终止/逾期，未被修改。
+
+---
+
+## [2026-08-18] - 枚举值口语误填自动纠正 + 集中人工审核列表页
+### 背景问题：写操作 SQL 里的枚举值口语化，模型识别不稳定
+- 用户实测 "POL744698...改为正常" 时，`Agent` 把 SQL 生成成 `PolicyStatus = '正常'`——但 `policyinfo` 表里 `PolicyStatus` 实际只有 暂停/生效/终止 三个值，压根没有"正常"。反复加强提示词（要求先 `SELECT DISTINCT` 核对枚举值再写 UPDATE）后，qwen-turbo 表现依然不稳定：有时候直接照抄用户原话，有时候在"先查值"这步就把 `max_iterations` 耗光、连 UPDATE 都写不出来，纯 prompt 层面治不好。
+### 修复：代码层确定性纠正，不再赌模型稳不稳
+- `service/ai/text2sql.py` 新增 `_fix_enum_values(sql)`：对 UPDATE 语句里每个 `col='val'` 赋值，查这列历史上实际出现过哪些值；如果这列像"小基数枚举"（≤12 个 distinct 值）且 val 不在其中，且 val 本身是"正常/normal"这类口语词，就用关键词打分（`_guess_normal_value`：正向关键词 生效/已支付/通过/成功... 减负向关键词 终止/逾期/未/暂停...）猜出真实枚举值，能唯一确定就直接把 SQL 改过来；猜不准就保留原值只加警告，交给人工判断。返回值随 interrupt payload 一起下发（`warnings` 字段），前端审核卡片展示。
+- 顺带修了一个衍生 bug：`run_text2sql_graph` 命中 interrupt 时顶层 `sql` 字段之前取的是暂停前 state 里的旧值（未修正），跟 `interrupt.sql`（已修正）不一致；改成统一取 `payload.get("sql")`。
+- `max_iterations` 在 `allow_write=True` 时从 4 提到 8——先查枚举值再写 UPDATE 比只读场景步数更多，4 步很容易在真正产出 SQL 前就把预算耗光。
+- 测试：同一条 "改为正常" 请求反复跑，`PolicyStatus`/`PremiumPaymentStatus` 都能稳定纠正成 `生效`/`已支付`；approve 后核实数据库落的确实是纠正后的值，不是字面的"正常"。
+
+### 用户需求：审核入口太分散，改成集中列表页
+用户反馈："人工审核 做成一个单独的审核列表页面，所有需要人工审核的页面都，在那个页面新生产一个审核记录，table展示，审核记录两个操作按钮，通过和拒绝。" 原来 Text2SQL 和 Agent 人工处理(HITL)演示页各自内联一个"需要人工审核"卡片（当场批准/拒绝），现在改成两处都只落一条审核记录到集中列表页，原页面不再能直接操作（用户明确选择这个方案，而不是两处都保留操作入口）。
+### 后端实现：
+- 新表 `model/ai/agent_review_task.py`（`AgentReviewTask`）：source(text2sql/hitl)/thread_id/question/content/warnings/status(pending/approved/rejected)/result/resolved_at。
+- 新模块 `service/ai/review.py`：`create_review_task()` 供各业务在命中 interrupt 时调用落记录；`list_review_tasks_api`/`approve_review_task_api`/`reject_review_task_api` 三个接口，approve/reject 按 `source` 分发去调用 `run_text2sql_graph`/`run_hitl_graph` 完成真正的 resume。
+- 接入点：`text2sql_hitl_api`（`/ai/text2sql/run` 命中 waitingForInput 时）、`langgraph_run_api`（`graph=hitl` 首次调用命中 waitingForInput 时，用 `resume_value is None` 判断是否首次调用，避免 resume 请求重复建记录）。
+- 新路由：`GET /ai/review/list`、`POST /ai/review/{id}/approve`（body 可传 `content` 编辑后批准）、`POST /ai/review/{id}/reject`。
+### 前端实现（doctor-dog-web/apps/ai）：
+- 新增 `src/service/review.ts` + `src/pages/AgentReviewList.tsx`：table 展示所有审核记录，可按状态筛选，展开行看警告/编辑内容，批准/拒绝按钮。
+- `src/config/routes.tsx` 加 `agent-review` 路由，`src/layouts/MainLayout.tsx` 加"审核列表"菜单项（紧邻原"人工审核"）。
+- `Text2SQL.tsx`、`AgentHitl.tsx` 命中 interrupt 时改成"已提交，等待人工审核"提示卡片 + "前往审核列表处理"跳转按钮，去掉原来内联的批准/拒绝按钮（及相关的 `resumeText2SqlHitl`/`resumeHitl` 调用）。
+### 测试结果：
+- 后端：`agent_review_task` 表自动建表确认列结构正确；curl 全流程验证 text2sql 和 hitl 两条来源都能正确落审核记录、approve 后真实执行（数据库/finalState 均确认）、清理干净。
+- 前端：`pnpm build` 无 TypeScript 错误；浏览器实测 Text2SQL 提交写操作 → "已提交等待审核"卡片（SQL 已是纠正后的值）→ 跳转审核列表页 → 展开看到警告 + SQL → 批准并执行 → 数据库确认落的是纠正后的枚举值 → 该记录从"待审核"筛选里消失。全部测试数据（`agent_review_task` 表记录 + `policyinfo` 测试改动）已清理。

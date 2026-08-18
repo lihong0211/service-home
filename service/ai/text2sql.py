@@ -122,6 +122,12 @@ SQL statement wrapped in a ```sql code block, and MUST NOT claim the change has 
 NOT been executed yet and is only pending human approval. Never say things like "已成功更新" / "successfully \
 updated" / "已插入" for a DML statement; instead say the statement is ready and awaiting approval.
 
+If a status/enum-like column's real values don't literally match the user's wording (e.g. user says "正常" \
+but the column only has values like 生效/终止/暂停), pick the closest matching existing value instead of the \
+literal phrase — check with a quick SELECT DISTINCT if unsure, but do not over-spend steps on this; you must \
+still end with the actual UPDATE statement. If the user asks to change multiple columns, the SET clause MUST \
+include every one of them — never silently drop one.
+
 If the question does not seem related to the database, just return "I don't know" as the answer."""
 
 
@@ -174,7 +180,9 @@ def _generate_sql(question: str, model: str = DEFAULT_CHAT_MODEL, allow_write: b
         agent_type="openai-tools",
         verbose=False,
         top_k=5,
-        max_iterations=4,
+        # allow_write 场景下 Agent 要先 SELECT DISTINCT 核对枚举值再写 UPDATE，步数比只读场景多，
+        # 4 步很容易在真正产出 SQL 之前就把预算耗光（实测复现过：查完值就没步数了，UPDATE 从没生成）
+        max_iterations=8 if allow_write else 4,
         max_execution_time=180,
         prefix=_SQL_PREFIX_ALLOW_WRITE if allow_write else None,
         agent_executor_kwargs={"return_intermediate_steps": True},
@@ -270,6 +278,84 @@ class Text2SqlState(TypedDict):
     executed: bool  # 幂等标记，见 _t2s_execute 的注释
 
 
+_SQL_UPDATE_SET_PATTERN = re.compile(r"UPDATE\s+([a-zA-Z0-9_]+)\s+SET\s+(.+?)\s+WHERE", re.IGNORECASE | re.DOTALL)
+_SQL_ASSIGNMENT_PATTERN = re.compile(r"([a-zA-Z0-9_]+)\s*=\s*'([^']*)'")
+
+
+_NORMAL_WORDS = {"正常", "normal", "ok", "好", "健康", "无异常", "没问题"}
+_POSITIVE_STATUS_KEYWORDS = [
+    "生效", "激活", "正常", "通过", "成功", "完成", "已支付", "已完成", "有效",
+    "启用", "已通过", "在保", "承保", "已交", "已缴", "已缴纳",
+]
+_NEGATIVE_STATUS_KEYWORDS = [
+    "终止", "失败", "拒绝", "逾期", "未", "暂停", "无效", "待", "异常",
+    "过期", "禁用", "作废", "取消", "退保", "冻结",
+]
+
+
+def _guess_normal_value(distinct_values: set) -> str | None:
+    """对"这列的哪个值算正常"做打分猜测：正向关键词计分减负向关键词计分，分数唯一最高才采用，
+    不唯一或全零分（比如枚举值都是纯数字/英文缩写，猜不出语义）就放弃，交给人工判断。"""
+    scored = []
+    for v in distinct_values:
+        pos = sum(1 for k in _POSITIVE_STATUS_KEYWORDS if k in v)
+        neg = sum(1 for k in _NEGATIVE_STATUS_KEYWORDS if k in v)
+        scored.append((v, pos - neg))
+    scored.sort(key=lambda x: -x[1])
+    if scored and scored[0][1] > 0 and (len(scored) == 1 or scored[0][1] > scored[1][1]):
+        return scored[0][0]
+    return None
+
+
+def _fix_enum_values(sql: str) -> tuple[str, list[str]]:
+    """
+    人工审核前的确定性兜底：Agent 生成 UPDATE 时经常直接照抄用户的口语措辞（比如"改为正常"）写进
+    状态类字段，而不是该列实际使用的枚举值（比如 生效/终止/暂停，压根没有"正常"这个值）——提示词
+    层面反复加强过这条规则，但小模型（qwen-turbo）表现不稳定，光提示不够用。改成代码层确定性检查：
+    对 UPDATE 语句里每个 col='val' 赋值，查一下这列历史上实际出现过哪些值；如果这列像"小基数枚举"
+    （distinct 值不超过 12 个）且 val 不在其中，且 val 本身是"正常"这类口语词，就用关键词打分猜出
+    哪个真实枚举值代表"正常"，能猜准就直接把 SQL 改过来（不是只提示，人工审核时看到的就是改好的
+    SQL）；猜不准就保留原值只给警告，让人工自己判断。返回 (改好的 SQL, 警告列表)。
+    """
+    match = _SQL_UPDATE_SET_PATTERN.search(sql)
+    if not match:
+        return sql, []
+    table, set_clause = match.group(1), match.group(2)
+    if not TABLE_NAME_PATTERN.match(table):
+        return sql, []
+    assignments = [(c, v) for c, v in _SQL_ASSIGNMENT_PATTERN.findall(set_clause) if TABLE_NAME_PATTERN.match(c)]
+    if not assignments:
+        return sql, []
+    warnings: list[str] = []
+    fixed_sql = sql
+    try:
+        engine = _ai_engine()
+        with engine.connect() as conn:
+            for col, val in assignments:
+                try:
+                    rows = conn.execute(text(f"SELECT DISTINCT `{col}` FROM `{table}` LIMIT 15")).fetchall()
+                except Exception:
+                    continue
+                distinct_values = {str(r[0]) for r in rows if r[0] is not None}
+                if not (0 < len(distinct_values) <= 12) or val in distinct_values:
+                    continue
+                guess = _guess_normal_value(distinct_values) if val.strip().lower() in _NORMAL_WORDS else None
+                if guess:
+                    assign_pattern = re.compile(rf"{re.escape(col)}\s*=\s*'{re.escape(val)}'")
+                    fixed_sql = assign_pattern.sub(f"{col} = '{guess}'", fixed_sql, count=1)
+                    warnings.append(
+                        f"{col} 列没有 '{val}' 这个值，已根据历史数据自动改成 '{guess}'"
+                        f"（该列实际使用的值：{'/'.join(sorted(distinct_values))}），请核对是否正确"
+                    )
+                else:
+                    warnings.append(
+                        f"{col} 列的值 '{val}' 在历史数据中从未出现过，实际使用的值是：{'/'.join(sorted(distinct_values))}，请确认是否正确"
+                    )
+    except Exception:
+        return fixed_sql, warnings
+    return fixed_sql, warnings
+
+
 def _t2s_generate(state: Text2SqlState) -> dict:
     gen = _generate_sql(state["question"], state.get("model") or DEFAULT_CHAT_MODEL, allow_write=True)
     return {"sql": gen.get("sql", ""), "answer": gen.get("answer", ""), "error": gen.get("error")}
@@ -282,14 +368,20 @@ def _t2s_review(state: Text2SqlState) -> Command[Literal["execute", "__end__"]]:
     sql = state["sql"]
     if _is_read_only_sql(sql):
         return Command(goto="execute", update={"decision": "approved"})
-    decision = interrupt({
+    fixed_sql, warnings = _fix_enum_values(sql)
+    payload = {
         "question": "检测到写操作 SQL，是否批准执行？可编辑 SQL 后批准，或拒绝。",
-        "sql": sql,
-    })
+        "sql": fixed_sql,
+    }
+    if warnings:
+        payload["warnings"] = warnings
+    decision = interrupt(payload)
     if isinstance(decision, str) and decision.strip():
         return Command(goto="execute", update={"decision": "approved", "sql": decision.strip()})
     if decision:
-        return Command(goto="execute", update={"decision": "approved"})
+        # 人工没有编辑、直接批准：用改好的 fixed_sql，不是 state["sql"] 原始未修正的版本——
+        # 人工看到并批准的是 payload 里的 fixed_sql，执行的必须跟看到的一致。
+        return Command(goto="execute", update={"decision": "approved", "sql": fixed_sql})
     return Command(goto=END, update={"decision": "rejected", "error": "已拒绝执行该 SQL"})
 
 
@@ -357,7 +449,9 @@ def run_text2sql_graph(input_state: dict | None, thread_id: str, resume=None) ->
     if interrupts:
         first = interrupts[0]
         payload = getattr(first, "value", first)
-        return {"threadId": thread_id, "waitingForInput": True, "interrupt": payload, "sql": result.get("sql", "")}
+        # 顶层 sql 字段必须跟 interrupt.sql 一致：payload 里是 _t2s_review 修正枚举值之后的 SQL，
+        # result["sql"] 是暂停前 state 里的旧值（Command 的 update 要 resume 之后才会真正落到 state）。
+        return {"threadId": thread_id, "waitingForInput": True, "interrupt": payload, "sql": payload.get("sql", result.get("sql", ""))}
     return {
         "threadId": thread_id,
         "waitingForInput": False,
@@ -415,6 +509,18 @@ def text2sql_hitl_api(request: Request):
         out = run_text2sql_graph({"question": question, "model": model, "max_rows": max_rows}, thread_id)
     except Exception as e:
         return ({"code": 400, "msg": str(e), "data": None}, 400)
+    if out.get("waitingForInput"):
+        # 命中 interrupt：落一条待审核记录，供集中的"人工审核"列表页查询/审批，
+        # 不在这里创建就没人知道有这条待审核项——resume 请求不会再走这条路径，只会创建一次。
+        from service.ai.review import create_review_task
+        interrupt = out.get("interrupt") or {}
+        create_review_task(
+            source="text2sql",
+            thread_id=thread_id,
+            question=interrupt.get("question", ""),
+            content=interrupt.get("sql", ""),
+            warnings=interrupt.get("warnings"),
+        )
     return {"code": 0, "msg": "ok", "data": out}
 
 

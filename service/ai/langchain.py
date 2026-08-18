@@ -1853,6 +1853,18 @@ def langgraph_run_api(request: Request):
             out = run_hitl_graph(input_state, thread_id, resume=resume_value)
         except Exception as e:
             return ({"code": 400, "msg": str(e), "data": {}}, 400)
+        if resume_value is None and out.get("waitingForInput"):
+            # 首次调用命中 interrupt：落一条待审核记录到集中的"人工审核"列表页，同 text2sql
+            # 的 text2sql_hitl_api 是同一套接入方式；resume_value is None 表示这是首次调用，
+            # 不是 resume 请求，避免 resume 时重复创建。
+            from service.ai.review import create_review_task
+            interrupt = out.get("interrupt") or {}
+            create_review_task(
+                source="hitl",
+                thread_id=thread_id,
+                question=interrupt.get("question", ""),
+                content=interrupt.get("suggestion", ""),
+            )
         return {"code": 0, "msg": "ok", "data": out}
 
     builder_fn = GRAPH_BUILDERS.get(graph_name)
