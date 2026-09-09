@@ -79,7 +79,7 @@ def parse_file_to_documents_mineru(
     返回形状与 parse_file_to_documents 一致：[{"id", "text", "category", "metadata"?}, ...]。
     调用前应先用 is_mineru_supported() 检查文件类型。
     """
-    from service.ai.knowledge import (
+    from service.ai.rag.knowledge import (
         _documents_from_heading_units,
         _md_units_with_headings,
         _merge_units_to_chunks,

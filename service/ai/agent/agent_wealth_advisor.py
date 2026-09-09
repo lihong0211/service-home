@@ -21,13 +21,20 @@ from langgraph.graph import END, StateGraph
 from service.ai.langchain import graph_to_schema, run_graph_stream_and_collect
 from config.ai import DASHSCOPE_BASE_URL, DEFAULT_CHAT_MODEL, dashscope_api_key
 
-_LLM = ChatOpenAI(
-    model=DEFAULT_CHAT_MODEL,
-    openai_api_key=dashscope_api_key(),
-    openai_api_base=DASHSCOPE_BASE_URL,
-    temperature=0.7,
-    max_tokens=2000,
-)
+_LLM: Optional[ChatOpenAI] = None
+
+
+def _get_llm() -> ChatOpenAI:
+    global _LLM
+    if _LLM is None:
+        _LLM = ChatOpenAI(
+            model=DEFAULT_CHAT_MODEL,
+            openai_api_key=dashscope_api_key(),
+            openai_api_base=DASHSCOPE_BASE_URL,
+            temperature=0.7,
+            max_tokens=2000,
+        )
+    return _LLM
 
 
 class WealthAdvisorState(TypedDict):
@@ -76,7 +83,7 @@ _RECOMMEND_PROMPT = """你是财富管理投顾。根据分析结果为客户准
 
 def _assess_query(state: WealthAdvisorState) -> WealthAdvisorState:
     try:
-        chain = ChatPromptTemplate.from_template(_ASSESS_PROMPT) | _LLM | JsonOutputParser()
+        chain = ChatPromptTemplate.from_template(_ASSESS_PROMPT) | _get_llm() | JsonOutputParser()
         result = chain.invoke({"user_query": state["user_query"]})
         mode = result.get("processing_mode") or "reactive"
         if mode not in ("reactive", "deliberative"):
@@ -91,7 +98,7 @@ def _assess_query(state: WealthAdvisorState) -> WealthAdvisorState:
 
 def _reactive_processing(state: WealthAdvisorState) -> WealthAdvisorState:
     try:
-        chain = ChatPromptTemplate.from_template(_REACTIVE_PROMPT) | _LLM | StrOutputParser()
+        chain = ChatPromptTemplate.from_template(_REACTIVE_PROMPT) | _get_llm() | StrOutputParser()
         resp = chain.invoke({
             "user_query": state["user_query"],
             "customer_profile": json.dumps(state.get("customer_profile") or {}, ensure_ascii=False),
@@ -103,7 +110,7 @@ def _reactive_processing(state: WealthAdvisorState) -> WealthAdvisorState:
 
 def _collect_data(state: WealthAdvisorState) -> WealthAdvisorState:
     try:
-        chain = ChatPromptTemplate.from_template(_DATA_PROMPT) | _LLM | JsonOutputParser()
+        chain = ChatPromptTemplate.from_template(_DATA_PROMPT) | _get_llm() | JsonOutputParser()
         result = chain.invoke({
             "user_query": state["user_query"],
             "customer_profile": json.dumps(state.get("customer_profile") or {}, ensure_ascii=False, indent=2),
@@ -117,7 +124,7 @@ def _analyze_data(state: WealthAdvisorState) -> WealthAdvisorState:
     if not state.get("market_data"):
         return {**state, "error": "分析阶段缺少市场数据"}
     try:
-        chain = ChatPromptTemplate.from_template(_ANALYSIS_PROMPT) | _LLM | JsonOutputParser()
+        chain = ChatPromptTemplate.from_template(_ANALYSIS_PROMPT) | _get_llm() | JsonOutputParser()
         result = chain.invoke({
             "user_query": state["user_query"],
             "customer_profile": json.dumps(state.get("customer_profile") or {}, ensure_ascii=False, indent=2),
@@ -132,7 +139,7 @@ def _generate_recommendations(state: WealthAdvisorState) -> WealthAdvisorState:
     if not state.get("analysis_results"):
         return {**state, "error": "建议生成阶段缺少分析结果"}
     try:
-        chain = ChatPromptTemplate.from_template(_RECOMMEND_PROMPT) | _LLM | StrOutputParser()
+        chain = ChatPromptTemplate.from_template(_RECOMMEND_PROMPT) | _get_llm() | StrOutputParser()
         result = chain.invoke({
             "user_query": state["user_query"],
             "customer_profile": json.dumps(state.get("customer_profile") or {}, ensure_ascii=False, indent=2),

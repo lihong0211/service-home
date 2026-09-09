@@ -92,7 +92,7 @@ class _DisneyRagAgent:
             return
 
         try:
-            from service.ai.vector_db_qdrant import search_in_db, client
+            from service.ai.rag.vector_db_qdrant import search_in_db, client
 
             # ── Step 1: 向量检索（step 输出与 langchain 的 node output 一致：含 query/sources 等）──
             row = _resolve_vector_db()
@@ -119,7 +119,7 @@ class _DisneyRagAgent:
                 return
 
             context = "\n\n---\n\n".join(context_parts)
-            from service.ai.rag_enhance import build_rag_answer_prompt
+            from service.ai.rag.rag_enhance import build_rag_answer_prompt
             prompt = build_rag_answer_prompt(question, context)
             from service.ai._dashscope_common import call_openai_chat_with_retry
             resp = call_openai_chat_with_retry(
@@ -158,7 +158,7 @@ class _DisneyRagAgent:
         if not question:
             return _make_final_state("", "请提供您的问题。", [])
         try:
-            from service.ai.rag import rag_chat
+            from service.ai.rag.rag import rag_chat
             out = rag_chat(
                 kb_name=DISNEY_KNOWLEDGE_BASE_NAME,
                 question=question,

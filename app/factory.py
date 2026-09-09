@@ -80,7 +80,7 @@ async def lifespan(app: FastAPI):
 
 def _warmup_moss_tts() -> None:
     try:
-        from service.ai.moss_tts import preload
+        from service.ai.media.moss_tts import preload
         preload()
     except Exception:
         pass
@@ -147,7 +147,7 @@ def register_websocket_routes(app: FastAPI) -> None:
 
     @app.websocket("/api/ai/stt/live")
     async def stt_live_ws(websocket: WebSocket):
-        from service.ai.stt import register_stt_ws_fastapi
+        from service.ai.media.stt import register_stt_ws_fastapi
 
         await register_stt_ws_fastapi(websocket)
 

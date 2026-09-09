@@ -12,7 +12,7 @@ from app.database import clear_request_session, set_request_session
 from app.deps import SessionDep
 from utils.api_result import normalize_api_result
 
-from service.ai.chat import chat, ocr_chat
+from service.ai.chat.chat import chat, ocr_chat
 from service.ai.langchain import (
     langgraph_graph_api,
     langgraph_run_api,
@@ -48,23 +48,23 @@ from service.ai.mcp import (
     mcp_stt_chat_api,
     mcp_stt_chat_stream_api,
 )
-from service.ai.function_call import (
+from service.ai.showcase.function_call import (
     function_calling_info_api,
     function_calling_chat_api,
 )
-from service.ai.stt import (
+from service.ai.media.stt import (
     transcribe as stt_transcribe,
     transcribe_stream as stt_transcribe_stream,
 )
-from service.ai.tts import speech as tts_speech
-from service.ai.image_gen import generate as image_generate
-from service.ai.video_undstanding import video_understand
-from service.ai.video_gen_task import (
+from service.ai.media.tts import speech as tts_speech
+from service.ai.media.image_gen import generate as image_generate
+from service.ai.media.video_undstanding import video_understand
+from service.ai.media.video_gen_task import (
     video_gen_task_create_api,
     video_gen_task_get_api,
     video_gen_task_list_api,
 )
-from service.ai.knowledge import (
+from service.ai.rag.knowledge import (
     list_knowledge_bases_api,
     create_knowledge_base_api,
     create_knowledge_base_from_pdf_api,
@@ -83,8 +83,8 @@ from service.ai.knowledge import (
     delete_knowledge_base_api,
     delete_knowledge_base_document_api,
 )
-from service.ai.rag import rag_ask_api, rag_search_api
-from service.ai.rag_eval import (
+from service.ai.rag.rag import rag_ask_api, rag_search_api
+from service.ai.rag.rag_eval import (
     evaluate_rag_api,
     generate_testset_api,
     list_testset_api,
@@ -93,7 +93,7 @@ from service.ai.rag_eval import (
     delete_testset_item_api,
     batch_evaluate_api,
 )
-from service.ai.bm25_es import bm25_sync_api
+from service.ai.rag.bm25_es import bm25_sync_api
 from service.ai.text2sql import (
     text2sql_api,
     text2sql_hitl_api,
@@ -106,7 +106,7 @@ from service.ai.review import (
     reject_review_task_api,
 )
 from service.ai.files import upload_file_api, list_files_api, preview_file_api
-from service.ai.vector_db_qdrant import (
+from service.ai.rag.vector_db_qdrant import (
     list_api as vector_db_list_api,
     create_api as vector_db_create_api,
     detail_api as vector_db_detail_api,
@@ -129,39 +129,39 @@ from service.ai.a2a import a2a_chain_api, a2a_chain_resume_api, a2a_chain_stream
 from service.ai.finetuning.finetuning import finetuning_chat_api, list_lora_options_api
 from service.ai.docs import service_ai_doc_api
 from service.ai.agent.agent_doctor import doctor_chat_api, doctor_session_api
-from service.ai.data_analysis import upload_data_file_api, query_data_api
-from service.ai.github_chat import github_index_api, github_ask_api
-from service.ai.youtube_chat import youtube_index_api, youtube_ask_api
-from service.ai.memory_chat import memory_chat_api, list_memories_api, clear_memories_api
-from service.ai.mixture_agents import list_models_api, mixture_chat_api
-from service.ai.resume_matcher import resume_match_api
-from service.ai.news_agent import fetch_articles_api, news_summary_api
-from service.ai.web_scraper import web_scrape_extract_api
+from service.ai.showcase.data_analysis import upload_data_file_api, query_data_api
+from service.ai.chat.github_chat import github_index_api, github_ask_api
+from service.ai.chat.youtube_chat import youtube_index_api, youtube_ask_api
+from service.ai.chat.memory_chat import memory_chat_api, list_memories_api, clear_memories_api
+from service.ai.showcase.mixture_agents import list_models_api, mixture_chat_api
+from service.ai.showcase.resume_matcher import resume_match_api
+from service.ai.showcase.news_agent import fetch_articles_api, news_summary_api
+from service.ai.showcase.web_scraper import web_scrape_extract_api
 # starter_agents
-from service.ai.starter_agents.travel_agent import travel_plan_api
-from service.ai.starter_agents.recipe_agent import recipe_plan_api
-from service.ai.starter_agents.health_fitness_agent import health_plan_api
-from service.ai.starter_agents.reasoning_agent import reasoning_chat_api
-from service.ai.starter_agents.finance_coach import finance_plan_api
-from service.ai.starter_agents.mental_wellbeing import wellbeing_chat_api
-from service.ai.starter_agents.startup_trend import startup_analyze_api
+from service.ai.showcase.starter_agents.travel_agent import travel_plan_api
+from service.ai.showcase.starter_agents.recipe_agent import recipe_plan_api
+from service.ai.showcase.starter_agents.health_fitness_agent import health_plan_api
+from service.ai.showcase.starter_agents.reasoning_agent import reasoning_chat_api
+from service.ai.showcase.starter_agents.finance_coach import finance_plan_api
+from service.ai.showcase.starter_agents.mental_wellbeing import wellbeing_chat_api
+from service.ai.showcase.starter_agents.startup_trend import startup_analyze_api
 # advanced_agents
-from service.ai.advanced_agents.speech_trainer import speech_analyze_api
-from service.ai.advanced_agents.negotiation_simulator import negotiation_chat_api, list_scenarios_api
-from service.ai.advanced_agents.chess_game import chess_new_api, chess_move_api
+from service.ai.showcase.advanced_agents.speech_trainer import speech_analyze_api
+from service.ai.showcase.advanced_agents.negotiation_simulator import negotiation_chat_api, list_scenarios_api
+from service.ai.showcase.advanced_agents.chess_game import chess_new_api, chess_move_api
 # chat_with_x
-from service.ai.chat_with_x.pdf_chat import pdf_index_api, pdf_ask_api
-from service.ai.chat_with_x.arxiv_chat import arxiv_index_api, arxiv_ask_api
-from service.ai.chat_with_x.gmail_chat import (
+from service.ai.chat.chat_with_x.pdf_chat import pdf_index_api, pdf_ask_api
+from service.ai.chat.chat_with_x.arxiv_chat import arxiv_index_api, arxiv_ask_api
+from service.ai.chat.chat_with_x.gmail_chat import (
     gmail_auth_api, gmail_callback_api, gmail_list_api, gmail_summarize_api, gmail_reply_draft_api,
 )
 # llm_apps
-from service.ai.llm_apps.blog_podcast import blog_script_api, blog_to_podcast_api
-from service.ai.llm_apps.data_viz import data_viz_columns_api, data_viz_api
-from service.ai.llm_apps.tarot_chat import tarot_read_api
-from service.ai.llm_apps.music_gen_agent import music_generate_api, music_status_api
+from service.ai.showcase.llm_apps.blog_podcast import blog_script_api, blog_to_podcast_api
+from service.ai.showcase.llm_apps.data_viz import data_viz_columns_api, data_viz_api
+from service.ai.showcase.llm_apps.tarot_chat import tarot_read_api
+from service.ai.showcase.llm_apps.music_gen_agent import music_generate_api, music_status_api
 # moss-tts
-from service.ai.moss_tts import moss_tts_speech_api, moss_tts_status_api
+from service.ai.media.moss_tts import moss_tts_speech_api, moss_tts_status_api
 
 
 async def _dispatch_ai_view(view, request: Request, **path_kwargs):

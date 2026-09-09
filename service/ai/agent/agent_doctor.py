@@ -42,14 +42,20 @@ from langgraph.graph.message import add_messages
 # LLM
 # ---------------------------------------------------------------------------
 
-_API_KEY = os.environ.get("DASHSCOPE_API_KEY")
-_LLM = ChatOpenAI(
-    model="qwen-plus",
-    openai_api_key=_API_KEY,
-    openai_api_base="https://dashscope.aliyuncs.com/compatible-mode/v1",
-    temperature=0.3,
-    max_tokens=3000,
-)
+_LLM: Optional[ChatOpenAI] = None
+
+
+def _get_llm() -> ChatOpenAI:
+    global _LLM
+    if _LLM is None:
+        _LLM = ChatOpenAI(
+            model="qwen-plus",
+            openai_api_key=os.environ.get("DASHSCOPE_API_KEY"),
+            openai_api_base="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            temperature=0.3,
+            max_tokens=3000,
+        )
+    return _LLM
 
 # ---------------------------------------------------------------------------
 # State
@@ -274,7 +280,7 @@ def _extract_info(state: DoctorState) -> dict:
         try:
             chain = (
                 ChatPromptTemplate.from_template(_EXTRACT_PROMPT)
-                | _LLM
+                | _get_llm()
                 | JsonOutputParser()
             )
             extracted = chain.invoke(
@@ -316,7 +322,7 @@ def _ask_questions(state: DoctorState) -> dict:
     missing_labels = [_FIELD_LABELS.get(f, f) for f in missing[:6]]
 
     try:
-        chain = ChatPromptTemplate.from_template(_ASK_PROMPT) | _LLM | StrOutputParser()
+        chain = ChatPromptTemplate.from_template(_ASK_PROMPT) | _get_llm() | StrOutputParser()
         reply = chain.invoke(
             {
                 "current_info": json.dumps(patient_info, ensure_ascii=False, indent=2),
@@ -344,7 +350,7 @@ def _generate_assessment(state: DoctorState) -> dict:
 
     try:
         chain = (
-            ChatPromptTemplate.from_template(_ASSESS_PROMPT) | _LLM | StrOutputParser()
+            ChatPromptTemplate.from_template(_ASSESS_PROMPT) | _get_llm() | StrOutputParser()
         )
         assessment = chain.invoke(
             {

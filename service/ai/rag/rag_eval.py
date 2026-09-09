@@ -30,7 +30,7 @@ from ragas.metrics.collections import (
 )
 
 from config.ai import DASHSCOPE_BASE_URL, DEFAULT_CHAT_MODEL, DEFAULT_EMBEDDING_MODEL, dashscope_api_key
-from service.ai.rag import rag_chat
+from service.ai.rag.rag import rag_chat
 from utils.http_body import query_dict, read_json_optional
 
 logger = logging.getLogger(__name__)

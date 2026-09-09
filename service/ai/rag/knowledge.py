@@ -30,7 +30,7 @@ from utils.http_body import (
 )
 
 from service.ai.files import convert_doc_to_docx_with_libreoffice, convert_ppt_to_pptx_with_libreoffice
-from service.ai.vector_db_qdrant import (
+from service.ai.rag.vector_db_qdrant import (
     DB_NAME_PATTERN,
     _append_documents_to_mysql,
     _create_empty_vector_db_on_disk,
@@ -266,7 +266,7 @@ def _semantic_chunk_text(text: str, chunk_size: int = 1000) -> list[str]:
     sentences = _split_sentences(text)
     if len(sentences) <= 1:
         return _chunk_text(text, chunk_size=chunk_size, chunk_overlap=fallback_overlap)
-    from service.ai.vector_db_qdrant import get_embedding
+    from service.ai.rag.vector_db_qdrant import get_embedding
     embeddings = []
     for s in sentences:
         try:
@@ -749,7 +749,7 @@ def parse_file_to_documents(
     """
     fn = (filename or "").lower()
     if parsing_strategy == "precise":
-        from service.ai.knowledge_mineru import is_mineru_supported, parse_file_to_documents_mineru
+        from service.ai.rag.knowledge_mineru import is_mineru_supported, parse_file_to_documents_mineru
         if is_mineru_supported(fn):
             return parse_file_to_documents_mineru(
                 file_path, filename, chunk_size=chunk_size, chunk_overlap=chunk_overlap,

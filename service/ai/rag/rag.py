@@ -12,10 +12,10 @@ import time
 import anyio.from_thread
 from fastapi import Request
 
-from service.ai.vector_db_qdrant import client, search_in_db
+from service.ai.rag.vector_db_qdrant import client, search_in_db
 from utils.http_body import read_json_optional
-from service.ai.rag_enhance import query_rewrite, rerank_documents, build_rag_answer_prompt
-from service.ai import bm25_es
+from service.ai.rag.rag_enhance import query_rewrite, rerank_documents, build_rag_answer_prompt
+from service.ai.rag import bm25_es
 from service.ai._dashscope_common import call_openai_chat_with_retry
 from config.ai import DEFAULT_CHAT_MODEL, DEFAULT_RERANK_MODEL
 from model.ai import VectorDb, KnowledgeBase
@@ -396,7 +396,7 @@ def rag_search_api(request: Request):
     POST body: { "knowledge_base_id"/"kb_name" 或 "knowledge_base_name", "query", "top_k": 3,
                  "enable_query_rewrite": bool, "enable_rerank": bool, "conversation_history": str }
     """
-    from service.ai.rag_enhance import query_rewrite, rerank_documents
+    from service.ai.rag.rag_enhance import query_rewrite, rerank_documents
     data = anyio.from_thread.run(read_json_optional, request) or {}
     kb_id = data.get("knowledge_base_id") or data.get("kb_id") or data.get("db_id")
     kb_name = (

@@ -580,7 +580,7 @@ def demo_state_management():
 
 def _memory_embed(texts: list[str]) -> list[list[float]]:
     """【记忆管理】长期记忆的语义索引向量化。复用 vector_db_qdrant 现成的 DashScope embedding，不重新实现一套。"""
-    from service.ai.vector_db_qdrant import get_embedding
+    from service.ai.rag.vector_db_qdrant import get_embedding
 
     return [get_embedding(t) for t in texts]
 

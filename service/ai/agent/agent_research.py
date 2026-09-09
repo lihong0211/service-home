@@ -23,13 +23,20 @@ from langgraph.graph import END, StateGraph
 from service.ai.langchain import graph_to_schema, run_graph_stream_and_collect
 from config.ai import DASHSCOPE_BASE_URL, DEFAULT_CHAT_MODEL, dashscope_api_key
 
-_LLM = ChatOpenAI(
-    model=DEFAULT_CHAT_MODEL,
-    openai_api_key=dashscope_api_key(),
-    openai_api_base=DASHSCOPE_BASE_URL,
-    temperature=0.7,
-    max_tokens=2000,
-)
+_LLM: Optional[ChatOpenAI] = None
+
+
+def _get_llm() -> ChatOpenAI:
+    global _LLM
+    if _LLM is None:
+        _LLM = ChatOpenAI(
+            model=DEFAULT_CHAT_MODEL,
+            openai_api_key=dashscope_api_key(),
+            openai_api_base=DASHSCOPE_BASE_URL,
+            temperature=0.7,
+            max_tokens=2000,
+        )
+    return _LLM
 
 
 class ResearchAgentState(TypedDict):
@@ -145,7 +152,7 @@ _REPORT_PROMPT = """你是一个专业的投资研究报告撰写人，请根据
 
 def _research_perception(state: ResearchAgentState) -> ResearchAgentState:
     try:
-        chain = ChatPromptTemplate.from_template(_PERCEPTION_PROMPT) | _LLM | JsonOutputParser()
+        chain = ChatPromptTemplate.from_template(_PERCEPTION_PROMPT) | _get_llm() | JsonOutputParser()
         result = chain.invoke({
             "research_topic": state["research_topic"],
             "industry_focus": state["industry_focus"],
@@ -160,7 +167,7 @@ def _research_modeling(state: ResearchAgentState) -> ResearchAgentState:
     if not state.get("perception_data"):
         return {**state, "error": "建模阶段缺少感知数据", "current_phase": "perception"}
     try:
-        chain = ChatPromptTemplate.from_template(_MODELING_PROMPT) | _LLM | JsonOutputParser()
+        chain = ChatPromptTemplate.from_template(_MODELING_PROMPT) | _get_llm() | JsonOutputParser()
         result = chain.invoke({
             "research_topic": state["research_topic"],
             "industry_focus": state["industry_focus"],
@@ -176,7 +183,7 @@ def _research_reasoning(state: ResearchAgentState) -> ResearchAgentState:
     if not state.get("world_model"):
         return {**state, "error": "推理阶段缺少世界模型", "current_phase": "modeling"}
     try:
-        chain = ChatPromptTemplate.from_template(_REASONING_PROMPT) | _LLM | JsonOutputParser()
+        chain = ChatPromptTemplate.from_template(_REASONING_PROMPT) | _get_llm() | JsonOutputParser()
         result = chain.invoke({
             "research_topic": state["research_topic"],
             "industry_focus": state["industry_focus"],
@@ -192,7 +199,7 @@ def _research_decision(state: ResearchAgentState) -> ResearchAgentState:
     if not state.get("reasoning_plans"):
         return {**state, "error": "决策阶段缺少候选方案", "current_phase": "reasoning"}
     try:
-        chain = ChatPromptTemplate.from_template(_DECISION_PROMPT) | _LLM | JsonOutputParser()
+        chain = ChatPromptTemplate.from_template(_DECISION_PROMPT) | _get_llm() | JsonOutputParser()
         result = chain.invoke({
             "research_topic": state["research_topic"],
             "industry_focus": state["industry_focus"],
@@ -209,7 +216,7 @@ def _research_report(state: ResearchAgentState) -> ResearchAgentState:
     if not state.get("selected_plan"):
         return {**state, "error": "报告阶段缺少选定方案", "current_phase": "decision"}
     try:
-        chain = ChatPromptTemplate.from_template(_REPORT_PROMPT) | _LLM | StrOutputParser()
+        chain = ChatPromptTemplate.from_template(_REPORT_PROMPT) | _get_llm() | StrOutputParser()
         result = chain.invoke({
             "research_topic": state["research_topic"],
             "industry_focus": state["industry_focus"],
