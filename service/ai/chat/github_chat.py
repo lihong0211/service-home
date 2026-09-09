@@ -22,6 +22,25 @@ _DIMENSION = int(os.getenv("VECTOR_DB_DIMENSION", "1024"))
 
 _client = get_dashscope_client(timeout=60.0)
 
+# 已索引仓库的元数据登记表（index_id -> {owner, repo, repo_url, file_count, chunk_count, indexed_at}）
+_REGISTRY_PATH = os.path.join("data", "github_chat", "index_registry.json")
+
+
+def _load_registry() -> dict:
+    try:
+        with open(_REGISTRY_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _save_registry_entry(index_id: str, entry: dict) -> None:
+    os.makedirs(os.path.dirname(_REGISTRY_PATH), exist_ok=True)
+    registry = _load_registry()
+    registry[index_id] = entry
+    with open(_REGISTRY_PATH, "w", encoding="utf-8") as f:
+        json.dump(registry, f, ensure_ascii=False, indent=2)
+
 # 支持索引的文件扩展名
 _ALLOWED_EXTS = {".py", ".js", ".ts", ".tsx", ".jsx", ".md", ".txt", ".go", ".java", ".rs", ".cpp", ".c", ".h"}
 _MAX_FILE_SIZE = 100 * 1024  # 100KB
@@ -237,17 +256,29 @@ async def github_index_api(request: Request):
     except Exception as e:
         return {"code": 500, "msg": f"写入向量库失败: {e}"}
 
+    entry = {
+        "index_id": index_id,
+        "owner": owner,
+        "repo": repo,
+        "repo_url": repo_url,
+        "file_count": len(files),
+        "chunk_count": len(qdrant_points),
+        "indexed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    _save_registry_entry(index_id, entry)
+
     return {
         "code": 0,
         "msg": "success",
-        "data": {
-            "index_id": index_id,
-            "file_count": len(files),
-            "chunk_count": len(qdrant_points),
-            "owner": owner,
-            "repo": repo,
-        },
+        "data": entry,
     }
+
+
+async def github_list_api(request: Request):
+    """已索引仓库列表，按索引时间倒序。"""
+    registry = _load_registry()
+    items = sorted(registry.values(), key=lambda e: e.get("indexed_at", ""), reverse=True)
+    return {"code": 0, "msg": "success", "data": items}
 
 
 async def github_ask_api(request: Request):

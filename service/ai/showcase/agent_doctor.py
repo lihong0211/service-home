@@ -1,7 +1,7 @@
 """
 医生智能体 - 多轮对话采集患者信息，进行深度诊断分析
 
-架构：LangGraph StateGraph + MemorySaver（多轮会话状态持久化）
+架构：LangGraph StateGraph + SqliteSaver（多轮会话状态持久化）
 
 流程：
   用户发消息
@@ -17,11 +17,15 @@
       ↓                          ↓
      END                        END
 
-每轮对话用相同 session_id 作为 thread_id，MemorySaver 自动保留历史状态。
+每轮对话用相同 session_id 作为 thread_id，SqliteSaver 自动保留历史状态。
+用共享 SQLite 文件而不是进程内存的 MemorySaver：生产按 UVICORN_WORKERS>1 起多进程，
+MemorySaver 存在各 worker 自己内存里，同一 session_id 的两次请求如果被负载均衡到
+不同 worker 就会丢失之前的问诊进度（同 service/ai/langchain/graph_hitl.py 的坑）。
 """
 
 import json
 import os
+import sqlite3
 import uuid
 from typing import Annotated, Any, Dict, List, Literal, Optional, TypedDict
 
@@ -34,9 +38,11 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
-from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
+
+from model.ai.doctor_session import DoctorSession
 
 # ---------------------------------------------------------------------------
 # LLM
@@ -128,6 +134,20 @@ def _get_missing_fields(patient_info: dict) -> List[str]:
     ]
 
 
+def _backfill_onset_from_duration(patient_info: dict) -> None:
+    """
+    患者常常只说"两天了"这种时长表达，从不单独说起病的具体时间点——但"两天了"本身
+    就已经回答了"什么时候开始的"。symptom_duration 有值而 symptom_onset 还空着时，
+    直接从 duration 派生一个 onset，而不是指望模型再单独追问一次同一件事。
+    （之前的做法是在 _is_info_sufficient 里放宽 onset 的完整度判断，但那样 onset
+    字段本身还是空的，病历里显示不出来，模型也还是会被 missing_fields 提示去追问；
+    在提取阶段直接把数据填上，才是从根上解决。）
+    """
+    if not _is_filled(patient_info.get("symptom_onset")) and _is_filled(patient_info.get("symptom_duration")):
+        duration = str(patient_info["symptom_duration"]).strip()
+        patient_info["symptom_onset"] = duration if duration.endswith(("前", "以前")) else f"{duration}前"
+
+
 def _is_info_sufficient(patient_info: dict, turn_count: int) -> bool:
     """
     判断是否可进入诊断阶段：
@@ -191,7 +211,8 @@ _ASK_PROMPT = """你是一位经验丰富的全科医生，正在问诊。语气
 - 语气自然，像真实医生问诊，不生硬，也不过度客套（避免"谢谢您告诉我"、"感谢您"等寒暄）
 - 每次只问最重要的 1-2 个问题，不要一口气列出很多，多个问题写在同一段里，不要换行
 - 根据上下文灵活判断优先级，如果患者已提到相关信息，顺着追问细节
-- 不要重复已经得到答案的问题
+- 严格核对"当前已收集的患者信息"（尤其 accompanying_symptoms 里可能已经包含的描述）：只要某个信息点已经出现过，哪怕这次想换一种问法/说法，也绝对不要再问一次
+- 如果患者已经提到静息状态下也喘、说话费力等警示性症状，优先追问该症状的严重程度（能否说完整句子、口唇/指甲有无发紫等），而不是转去问用药史、过敏史、家族史这类次要信息
 
 直接输出医生说的话，不要任何前缀或后缀。"""
 
@@ -233,6 +254,26 @@ _ASSESS_PROMPT = """你是一位资深全科医生，根据以下患者信息，
 - 一般处理（休息、饮食、生活方式）
 - 药物治疗建议（如适用，需遵医嘱）
 - 是否需要转专科及推荐科室"""
+
+
+_AUDIT_PROMPT = """你是一位资深医疗培训督导，负责审核 AI 问诊助手与患者的对话质量。
+
+完整问诊对话：
+{history}
+
+已收集的结构化患者信息：
+{patient_info}
+
+请审核这次问诊过程，核心目标只有一个：**这个流程有没有用最少的轮次、最快的速度收集到诊断所需的患者信息**。重点关注：
+1. 把整个问诊流程当成一个整体来分析信息收集的效率——不要逐轮列清单，而是用连贯的分析文字指出流程中哪些环节拖慢了信息收集（比如：重复提问，哪怕换了说法但语义已在更早的回答里出现过；追问优先级不合理，比如出现警示症状后没有优先追问其严重程度、反而先问了次要信息；问法模糊导致患者答非所问、需要二次确认；本可以合并成一轮问的信息分成了好几轮问）。需要举出具体轮次/原话作为证据，但不要按轮次编号逐条罗列
+2. 给出本次问诊的整体质量评价（信息收集效率、提问逻辑顺序是否符合临床优先级、患者是否表现出不耐烦等负面信号）
+
+直接输出以下两部分，不要多余的开场白或总结性寒暄，不要给 prompt 优化建议：
+
+**一、问诊流程审查**
+（整体分析信息收集效率，穿插具体轮次原话作为证据，不要逐轮编号列清单）
+
+**二、会话质量总评**"""
 
 
 # ---------------------------------------------------------------------------
@@ -295,6 +336,7 @@ def _extract_info(state: DoctorState) -> dict:
                 for k, v in extracted.items():
                     if v is not None and str(v).strip():
                         patient_info[k] = v
+                _backfill_onset_from_duration(patient_info)
         except Exception:
             pass  # 提取失败不中断流程，下轮继续
 
@@ -372,7 +414,16 @@ def _generate_assessment(state: DoctorState) -> dict:
 # Graph construction
 # ---------------------------------------------------------------------------
 
-_memory = MemorySaver()
+def _get_doctor_checkpointer() -> SqliteSaver:
+    """共享 SQLite 文件做 checkpointer，跨 worker 进程共享问诊状态（见模块 docstring）。"""
+    db_dir = os.path.join(os.getcwd(), "data", "checkpoints")
+    os.makedirs(db_dir, exist_ok=True)
+    conn = sqlite3.connect(os.path.join(db_dir, "doctor.sqlite"), check_same_thread=False)
+    saver = SqliteSaver(conn)
+    saver.setup()  # 幂等，首次调用建表
+    return saver
+
+
 _doctor_graph = None
 
 
@@ -392,7 +443,7 @@ def _build_graph():
     )
     workflow.add_edge("ask_questions", END)
     workflow.add_edge("generate_assessment", END)
-    return workflow.compile(checkpointer=_memory)
+    return workflow.compile(checkpointer=_get_doctor_checkpointer())
 
 
 def get_doctor_graph():
@@ -412,6 +463,25 @@ _ALL_FIELDS = _CRITICAL_FIELDS + _IMPORTANT_FIELDS + _OPTIONAL_FIELDS
 def _calc_completion_pct(patient_info: dict) -> int:
     filled = sum(1 for f in _ALL_FIELDS if _is_filled(patient_info.get(f)))
     return round(filled / len(_ALL_FIELDS) * 100)
+
+
+def _upsert_doctor_session(session_id: str, patient_info: dict, phase: str, turn_count: int) -> None:
+    """每轮对话后同步一行会话摘要，供历史会话列表使用；失败不影响主流程。"""
+    try:
+        payload = {
+            "session_id": session_id,
+            "chief_complaint": (patient_info.get("chief_complaint") or "")[:200],
+            "phase": phase,
+            "turn_count": turn_count,
+            "completion_pct": _calc_completion_pct(patient_info),
+        }
+        existing = DoctorSession.select_one_by({"session_id": session_id})
+        if existing:
+            DoctorSession.update({**payload, "id": existing.id})
+        else:
+            DoctorSession.insert(payload)
+    except Exception:
+        pass
 
 
 def chat(session_id: str, message: str) -> dict:
@@ -458,19 +528,49 @@ def chat(session_id: str, message: str) -> dict:
             reply = m.content
             break
 
+    phase = result.get("collection_phase", "collecting")
+    _upsert_doctor_session(
+        session_id, result.get("patient_info") or {}, phase, result.get("turn_count", 0)
+    )
+
     return {
         "reply": reply,
-        "phase": result.get("collection_phase", "collecting"),
+        "phase": phase,
         "assessment": result.get("assessment"),
     }
 
 
+def get_history_list(limit: int = 20) -> List[dict]:
+    """历史问诊会话列表，按最近更新时间倒序。"""
+    rows = DoctorSession.select_by({"order_by": {"col": "update_at", "sort": "desc"}})
+    return [
+        {
+            "session_id": r.session_id,
+            "chief_complaint": r.chief_complaint,
+            "phase": r.phase,
+            "turn_count": r.turn_count,
+            "completion_pct": r.completion_pct,
+            "updated_at": r.update_at.isoformat() if r.update_at else None,
+        }
+        for r in rows[:limit]
+    ]
+
+
+def delete_session(session_id: str) -> bool:
+    """从历史列表里移除一条会话（软删除）；不影响 LangGraph checkpointer 里的对话状态。"""
+    existing = DoctorSession.select_one_by({"session_id": session_id})
+    if not existing:
+        return False
+    DoctorSession.delete(existing.id)
+    return True
+
+
 def get_session_info(session_id: str) -> dict:
     """
-    获取指定会话的当前问诊状态摘要。
+    获取指定会话的当前问诊状态摘要，含完整对话消息（供前端"查看/继续历史问诊"还原聊天气泡）。
 
     Returns:
-        包含 session_id、patient_info、phase、turn_count、completion_pct、assessment 的字典，
+        包含 session_id、patient_info、phase、turn_count、completion_pct、assessment、messages 的字典，
         或 {"error": "..."} 若会话不存在。
     """
     graph = get_doctor_graph()
@@ -485,6 +585,15 @@ def get_session_info(session_id: str) -> dict:
         return {"error": "会话不存在或尚未开始"}
 
     patient_info = state.values.get("patient_info") or {}
+    messages = []
+    for m in state.values.get("messages") or []:
+        if isinstance(m, HumanMessage) or (isinstance(m, dict) and m.get("role") == "user"):
+            messages.append({"role": "user", "content": _msg_content(m)})
+        elif isinstance(m, AIMessage) or (isinstance(m, dict) and m.get("role") == "assistant"):
+            messages.append({"role": "assistant", "content": _msg_content(m)})
+
+    record = DoctorSession.select_one_by({"session_id": session_id})
+
     return {
         "session_id": session_id,
         "patient_info": patient_info,
@@ -492,7 +601,47 @@ def get_session_info(session_id: str) -> dict:
         "turn_count": state.values.get("turn_count", 0),
         "completion_pct": _calc_completion_pct(patient_info),
         "assessment": state.values.get("assessment"),
+        "messages": messages,
+        "audit_summary": record.audit_summary if record else None,
     }
+
+
+def audit_session(session_id: str) -> dict:
+    """
+    AI 审核一次问诊会话：逐轮检查提问是否必要/精确/有目的性，给出会话质量总评和 prompt 优化建议。
+    结果落库到 DoctorSession.audit_summary，供历史列表里的"病历"面板展示。
+    """
+    info = get_session_info(session_id)
+    if "error" in info:
+        return info
+
+    if info.get("phase") != "completed":
+        return {"error": "问诊尚未完成，暂不能生成审核总结"}
+
+    messages = info.get("messages") or []
+    if not messages:
+        return {"error": "会话暂无对话内容，无法审核"}
+
+    history_text = "\n".join(
+        f"{'患者' if m['role'] == 'user' else '医生'}：{m['content']}" for m in messages
+    )
+
+    try:
+        chain = ChatPromptTemplate.from_template(_AUDIT_PROMPT) | _get_llm() | StrOutputParser()
+        summary = chain.invoke(
+            {
+                "history": history_text,
+                "patient_info": json.dumps(info["patient_info"], ensure_ascii=False, indent=2),
+            }
+        )
+    except Exception as e:
+        return {"error": f"审核生成失败：{e}"}
+
+    existing = DoctorSession.select_one_by({"session_id": session_id})
+    if existing:
+        DoctorSession.update({"id": existing.id, "audit_summary": summary})
+
+    return {"session_id": session_id, "audit_summary": summary}
 
 
 # ---------------------------------------------------------------------------
@@ -544,6 +693,38 @@ def doctor_session_api(request: Request, session_id: str):
     返回当前会话的问诊状态摘要（不触发新一轮对话）。
     """
     result = get_session_info(session_id)
+    if "error" in result:
+        return ({"code": 404, "msg": result["error"]}, 404)
+    return {"code": 0, "msg": "ok", "data": result}
+
+
+def doctor_history_api(request: Request):
+    """
+    GET /ai/doctor/history
+
+    返回历史问诊会话列表（按最近更新时间倒序），用于前端"历史会话"入口。
+    """
+    return {"code": 0, "msg": "ok", "data": get_history_list()}
+
+
+def doctor_delete_session_api(request: Request, session_id: str):
+    """
+    DELETE /ai/doctor/session/<session_id>
+
+    从历史问诊列表中删除一条会话。
+    """
+    if not delete_session(session_id):
+        return ({"code": 404, "msg": "会话不存在"}, 404)
+    return {"code": 0, "msg": "ok", "data": None}
+
+
+def doctor_audit_api(request: Request, session_id: str):
+    """
+    POST /ai/doctor/session/<session_id>/audit
+
+    对一次问诊会话生成 AI 审核总结（逐轮提问质量 + prompt 优化建议），并持久化。
+    """
+    result = audit_session(session_id)
     if "error" in result:
         return ({"code": 404, "msg": result["error"]}, 404)
     return {"code": 0, "msg": "ok", "data": result}

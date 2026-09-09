@@ -11,6 +11,7 @@ from .agent_trace import AgentTrace
 from .agent_booking import AgentBooking
 from .rag_testset import RagTestsetItem
 from .agent_review_task import AgentReviewTask
+from .doctor_session import DoctorSession
 
 __all__ = [
     "VectorDb",
@@ -25,4 +26,5 @@ __all__ = [
     "AgentBooking",
     "RagTestsetItem",
     "AgentReviewTask",
+    "DoctorSession",
 ]

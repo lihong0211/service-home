@@ -16,12 +16,12 @@ import anyio.from_thread
 from fastapi import Request
 from fastapi.responses import StreamingResponse
 
-from service.ai.agent.agent_fund_qa import create_fund_qa_agent
-from service.ai.agent.agent_research import (
+from service.ai.showcase.agent_fund_qa import create_fund_qa_agent
+from service.ai.showcase.agent_research import (
     create_research_agent_workflow,
     RESEARCH_NODE_DISPLAY,
 )
-from service.ai.agent.agent_wealth_advisor import (
+from service.ai.showcase.agent_wealth_advisor import (
     create_wealth_advisor_workflow,
     WEALTH_NODE_DISPLAY,
 )

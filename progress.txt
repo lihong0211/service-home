@@ -139,3 +139,52 @@
 ### 测试结果：
 - 后端：`agent_review_task` 表自动建表确认列结构正确；curl 全流程验证 text2sql 和 hitl 两条来源都能正确落审核记录、approve 后真实执行（数据库/finalState 均确认）、清理干净。
 - 前端：`pnpm build` 无 TypeScript 错误；浏览器实测 Text2SQL 提交写操作 → "已提交等待审核"卡片（SQL 已是纠正后的值）→ 跳转审核列表页 → 展开看到警告 + SQL → 批准并执行 → 数据库确认落的是纠正后的枚举值 → 该记录从"待审核"筛选里消失。全部测试数据（`agent_review_task` 表记录 + `policyinfo` 测试改动）已清理。
+
+---
+
+## [2026-08-18] - RAG 测试集中文生成/CRUD + 回答完整性优化，MinerU 精确解析，Docker 化，隐式反馈采集
+### 背景问题：RAGAS 生成的测试集偏英文
+默认 query synthesizer（single_hop_specific/multi_hop_abstract/multi_hop_specific）的 prompt 模板自带英文 few-shot 示例，即便源文档是中文，生成的问答对也经常偏英文——单纯加一句中文提示词（llm_context）压不住。
+### 修复：手动重建 RAGAS 生成流程，换成翻译后的中文 prompt
+- `service/ai/rag_eval.py` 新增 `_get_zh_prompts_by_synthesizer`：用 `adapt_prompts("chinese", ...)` 把每个 synthesizer 的模板连英文示例一起翻译成中文，按类名缓存跨请求复用。
+- `_generate_testset` 不再直接调 `generate_with_chunks`（内部用的是没翻译过的默认 distribution），改成手动重复它构建知识图谱（`KnowledgeGraph`+`apply_transforms`）、再调 `default_query_distribution(llm, kg)` 拿到按当前知识库实际有没有实体关系簇过滤过的 synthesizer 组合，逐个 `set_prompts` 换成中文版——这一步是必须的，因为如果直接复用一份写死的 distribution，会导致 multi_hop synthesizer 在没有可用簇的知识图谱上报错 "No relationships match the provided condition. Cannot form clusters."（已实测触发）。
+- 新增单条测试集数据 增/改/删 API：`create_testset_item_api`（手动补数据，`synthesizer` 固定标 `manual`，跟自动生成的区分开）、`update_testset_item_api`（只改传了的字段）、`delete_testset_item_api`。路由：`POST/PUT/DELETE /ai/rag/testset/{create,{item_id}}`。
+### RAG 回答完整性
+`rag.py` 回答 prompt 加规则要求完整覆盖参考资料里的相关信息点（尤其是限制条件、注意事项类内容），避免只答主干漏答上下文里的细节。
+### 知识库解析新增 precise 模式（MinerU）
+新增 `service/ai/knowledge_mineru.py`：`knowledge_base.parsing_strategy="precise"` 时的可选解析路径，通过 MinerU CLI（不是 Python 包导入）把 PDF/DOCX/PPTX/XLSX/XLS/图片转成 Markdown，再复用 `knowledge.py` 里已有的标题层级/分段工具，输出形状与默认 `fast` 解析完全一致。完全独立于现有 `_documents_from_pdf/_documents_from_docx/...`（默认 `fast` 模式一行不改），未安装 MinerU 不影响默认流程，只在显式选 `precise` 时才 import。TXT/MD 本身已是纯文本/已有标题结构，不支持也不需要 precise。
+### 可观测性：隐式反馈采集
+- `model/ai/agent_trace.py` 的 `AgentTrace` 新增 `copied`（Boolean，默认 False）字段：答案是否被用户复制过。跟需要用户主动点赞/点踩的显式 `feedback` 不同，复制是用户已经在使用答案的自然动作，信号更真实——大部分不满意用户是沉默流失，不会点踩。
+- 新增 `trace_copy_api`，路由 `POST /ai/langgraph/trace/copy`，与既有的 `/ai/langgraph/trace/feedback` 同属回流采集入口。
+- `rag.py`/`langchain.py` 的 trace `input_summary`/`output_summary` 截断上限从 2000 放宽到 15000（TEXT 列安全上限约 16383 字符），避免长回答丢信息。
+### Docker 化
+新增 `Dockerfile`/`docker-compose.yml`，服务可容器化部署。MySQL 跑在宿主机而非容器里，`DB_HOST` 显式指向 `host.docker.internal`；`DASHSCOPE_API_KEY` 只在 `~/.zshrc` 里不在 `.env`，启动需 `zsh -ic 'source ~/.zshrc && docker compose up -d --build'` 才能让变量替换生效；`data/`/`lora/`/`workspace/` 挂载卷持久化。
+### 文档
+补充 `docs/ai/agent权限设计.md`（agent 权限设计）、`docs/langgraph-features-implemented.md`（LangGraph 功能实现进度）、更新 `docs/service_ai/03_knowledge_base.md`（precise 解析模式说明）。
+### 测试结果：
+- 本次为纯后端改动（无前端改动）。`python -c "from routes.ai import register_ai"` 导入正常；RAG 测试集生成实测中文知识库产出中文问答对（含 multi_hop 类型，未再触发聚簇报错）；单条 CRUD 三个接口 curl 验证增/改/删均正常；`trace_copy_api` curl 验证 `copied` 字段正确落库。
+### 注意事项：
+- MinerU 是可选依赖（`pip install "mineru[pipeline]"` 或 `mineru[core]`），未安装时 `precise` 模式会在调用时报错提示安装，不影响默认 `fast` 流程。
+- Docker Compose 是本机手动 `docker compose up -d --build` 部署方式，不是 CI/CD 自动化，改代码后需要重新 build 才生效。
+
+---
+
+## [2026-09-09] - AI 股票分析：ARIMA 预测 / Prophet 周期分解 / 布林带异常检测 / 自动配图
+### 背景
+用户看完 `service/ai/26-项目实战：交互式BI报表` 课程案例（qwen-agent 版 ChatBI stock_query_assistant）后，要求把里面的 ARIMA/Prophet/布林带/自动配图能力做成独立功能——明确不跟 `text2sql.py` 产生任何关系，全栈实现，前端挂在 AppHub（应用广场）下。
+### 后端实现：
+- 新增 `service/ai/stock_analysis.py`：独立模块，不 import 任何 text2sql 代码。数据源为 Tushare（`.env` 新增 `TUSHARE_TOKEN`），实时拉取 A 股日线行情，落地缓存到 `ai` 库 `stock_price` 表（`CREATE TABLE IF NOT EXISTS`，`UNIQUE KEY(ts_code, trade_date)`，upsert 用 `ON DUPLICATE KEY UPDATE`）。`_sync_prices` 会先查表内是否已覆盖请求区间，覆盖则跳过重新拉取。
+- 全市场股票名称（`stock_basic`）内存缓存 24h + 落盘缓存到 `data/stock_analysis/stock_basic.csv`：Tushare 免费额度下 `stock_basic` 限频 1 次/小时，API 失败时优先退回磁盘缓存，价格同步路径里 `_stock_name` 查不到时非致命地退回 `ts_code` 本身，不阻塞行情拉取。
+- 路由（`routes/ai.py`，走 `_ai_route`，未使用装饰器）：`GET /ai/stock-analysis/search`（按名称/代码模糊搜索）、`POST /ai/stock-analysis/query`（行情查询+自动智能配图：数据点>20 折线抽样10点，否则柱状）、`POST /ai/stock-analysis/arima`（ARIMA(5,1,5) 预测未来 n 天）、`POST /ai/stock-analysis/boll`（20 日+2σ 布林带超买超卖检测）、`POST /ai/stock-analysis/prophet`（trend/weekly/yearly 周期分解）。图表统一走 matplotlib Agg 后端生成后 base64 内嵌进 JSON `data.image_base64`（沿用 `data_viz.py` 现有约定，不是落盘+静态路由）。
+- `requirements.txt` 新增 `tushare`/`statsmodels`/`prophet`。
+### 前端实现（doctor-dog-web/apps/ai）：
+- `src/service/stock-analysis.ts`：对应 5 个接口的类型化调用。
+- `src/pages/StockAnalysis.tsx`：AutoComplete 搜索选股 → Tabs 四个分析维度（行情查询/自动配图、ARIMA 预测、布林带异常检测、Prophet 周期分解），日期区间用普通 Input（YYYY-MM-DD 文本），项目里没有 dayjs/DatePicker 先例，未引入新依赖。
+- `src/config/routes.tsx` `appRoutes` 追加 `stock-analysis` 路由；`src/pages/appHubData.tsx` 追加卡片（`id: 31`，category `数据分析`，icon `StockOutlined`）——放在 AppHub「应用广场」而不是技能页，所以未改 `MainLayout.tsx` 菜单。
+### 测试结果：
+- 后端：`query`/`arima`/`boll`/`prophet` 四个接口对真实股票（600519.SH 贵州茅台）curl 全部验证通过，价格数据成功写入/复用 MySQL `stock_price` 表，ARIMA/布林带/Prophet 图表均正常生成（base64 长度符合预期）。
+- 前端：`pnpm build` 无 TypeScript 错误；浏览器打开 `/apps/stock-analysis`，页面渲染正常，输入股票名触发搜索请求，网络请求/错误提示均按预期走通（axios 拦截器 catch → `message.error` toast 弹出）。
+- `search` 接口本身受 Tushare `stock_basic` 免费额度限频（1 次/小时，测试期间还遇到过 1 次/分钟的瞬时限流）影响，测试期间反复触发限流，未能在浏览器里走完"搜索选股 → 四个分析 Tab 出结果"的完整可视化闭环；这不是代码问题——`query`/`arima`/`boll`/`prophet` 四个计算接口已用真实数据逐一 curl 验证成功，`search` 只要限流窗口过去、拿到一次成功响应就会把结果写入磁盘缓存并从此稳定可用。
+### 注意事项：
+- **提交状态**：本次改动完成时，`service-home`（`routes/ai.py`）和 `doctor-dog-web/apps/ai`（`src/config/routes.tsx`、`src/pages/appHubData.tsx`）里发现另一个进程正在并发修改这几个共享文件（agent 相关的路由重命名/新增 DoctorAgent、ResearchAgent、DisneyServiceAgent、WealthAdvisorAgent 等），改动在同一批文件里交织在一起、无法用 `git add <file>` 干净地只提交本任务的部分，因此本次未执行 git commit/push，需要人工确认后再提交。
+- Tushare `TUSHARE_TOKEN` 已写入 `.env`（gitignore 覆盖，不会入库）。

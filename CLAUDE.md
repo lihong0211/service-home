@@ -30,6 +30,12 @@ pip install -r requirements.txt
 ```
 Fine-tuning dependencies are in `requirements.finetuning.txt` and are optional for the main API.
 
+**Docker:**
+```bash
+zsh -ic 'source ~/.zshrc && docker compose up -d --build'
+```
+MySQL runs on the host, not in a container — `docker-compose.yml` points `DB_HOST` at `host.docker.internal` so the container can reach it. `DASHSCOPE_API_KEY` lives only in `~/.zshrc`, not `.env`, so it must be sourced into the shell before `docker compose up` for the variable substitution to pick it up. `data/`, `lora/`, `workspace/` are bind-mounted so they persist outside the container.
+
 ## Environment
 
 Create a `.env` file in the project root. Required variables:
@@ -76,7 +82,7 @@ Business views return `dict`, `(dict, status_code)`, or a Starlette `Response` o
 ### Service Modules (`service/ai/`)
 
 - **chat.py** — LLM chat (text + OCR)
-- **knowledge.py** — Knowledge base CRUD, multi-format document ingestion (PDF/DOCX/PPTX/TXT/MD), chunking strategy
+- **knowledge.py** — Knowledge base CRUD, multi-format document ingestion (PDF/DOCX/PPTX/TXT/MD), chunking strategy. `parsing_strategy` defaults to `"fast"` (built-in parsers below); `"precise"` delegates to **knowledge_mineru.py**, which shells out to the MinerU CLI to convert PDF/DOCX/PPTX/XLSX/XLS/images to Markdown and then reuses knowledge.py's heading/chunking helpers — optional dependency, only imported when `precise` is selected
 - **vector_db_qdrant.py** — Vector DB management backed by Qdrant; handles document embedding and similarity search
 - **rag.py** — RAG pipeline: retrieval from vector DB, optional query rewriting and reranking, answer generation
 - **rag_enhance.py** — Query rewrite (CASEA) and rerank (DashScope) helpers

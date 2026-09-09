@@ -1,7 +1,7 @@
 # 前端对接说明（Agent / LangGraph）
 
 > 面向前端开发：智能体执行、LangGraph 图执行的接口约定、请求/响应格式、SSE 流式协议及使用示例。  
-> 后端入口：`routes/ai.py`；实现：`service/ai/agent/agent.py`、`service/ai/langchain.py`  
+> 后端入口：`routes/ai.py`；实现：`service/ai/showcase/agents/agent.py`、`service/ai/langchain.py`  
 > 生成日期：2026-02-26 | 更新：2026-03-11（LangGraph 多轮对话 history、执行监控字段 totalNodes/completedSteps/executionProgress）
 
 ---

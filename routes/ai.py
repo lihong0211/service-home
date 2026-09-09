@@ -22,7 +22,7 @@ from service.ai.langchain import (
     trace_copy_api,
     saga_demo_api,
 )
-from service.ai.agent import (
+from service.ai.showcase.agent import (
     agent_list_api,
     agent_schema_api,
     agent_run_api,
@@ -128,9 +128,22 @@ from service.ai.rag.vector_db_qdrant import (
 from service.ai.a2a import a2a_chain_api, a2a_chain_resume_api, a2a_chain_stream_api
 from service.ai.finetuning.finetuning import finetuning_chat_api, list_lora_options_api
 from service.ai.docs import service_ai_doc_api
-from service.ai.agent.agent_doctor import doctor_chat_api, doctor_session_api
+from service.ai.showcase.agent_doctor import (
+    doctor_chat_api,
+    doctor_session_api,
+    doctor_history_api,
+    doctor_delete_session_api,
+    doctor_audit_api,
+)
 from service.ai.showcase.data_analysis import upload_data_file_api, query_data_api
-from service.ai.chat.github_chat import github_index_api, github_ask_api
+from service.ai.showcase.stock_analysis import (
+    search_stock_api,
+    query_prices_api,
+    arima_forecast_api,
+    boll_detection_api,
+    prophet_analysis_api,
+)
+from service.ai.chat.github_chat import github_index_api, github_ask_api, github_list_api
 from service.ai.chat.youtube_chat import youtube_index_api, youtube_ask_api
 from service.ai.chat.memory_chat import memory_chat_api, list_memories_api, clear_memories_api
 from service.ai.showcase.mixture_agents import list_models_api, mixture_chat_api
@@ -138,17 +151,17 @@ from service.ai.showcase.resume_matcher import resume_match_api
 from service.ai.showcase.news_agent import fetch_articles_api, news_summary_api
 from service.ai.showcase.web_scraper import web_scrape_extract_api
 # starter_agents
-from service.ai.showcase.starter_agents.travel_agent import travel_plan_api
-from service.ai.showcase.starter_agents.recipe_agent import recipe_plan_api
-from service.ai.showcase.starter_agents.health_fitness_agent import health_plan_api
-from service.ai.showcase.starter_agents.reasoning_agent import reasoning_chat_api
-from service.ai.showcase.starter_agents.finance_coach import finance_plan_api
-from service.ai.showcase.starter_agents.mental_wellbeing import wellbeing_chat_api
-from service.ai.showcase.starter_agents.startup_trend import startup_analyze_api
+from service.ai.showcase.travel_agent import travel_plan_api
+from service.ai.showcase.recipe_agent import recipe_plan_api
+from service.ai.showcase.health_fitness_agent import health_plan_api
+from service.ai.showcase.reasoning_agent import reasoning_chat_api
+from service.ai.showcase.finance_coach import finance_plan_api
+from service.ai.showcase.mental_wellbeing import wellbeing_chat_api
+from service.ai.showcase.startup_trend import startup_analyze_api
 # advanced_agents
-from service.ai.showcase.advanced_agents.speech_trainer import speech_analyze_api
-from service.ai.showcase.advanced_agents.negotiation_simulator import negotiation_chat_api, list_scenarios_api
-from service.ai.showcase.advanced_agents.chess_game import chess_new_api, chess_move_api
+from service.ai.showcase.speech_trainer import speech_analyze_api
+from service.ai.showcase.negotiation_simulator import negotiation_chat_api, list_scenarios_api
+from service.ai.showcase.chess_game import chess_new_api, chess_move_api
 # chat_with_x
 from service.ai.chat.chat_with_x.pdf_chat import pdf_index_api, pdf_ask_api
 from service.ai.chat.chat_with_x.arxiv_chat import arxiv_index_api, arxiv_ask_api
@@ -156,10 +169,10 @@ from service.ai.chat.chat_with_x.gmail_chat import (
     gmail_auth_api, gmail_callback_api, gmail_list_api, gmail_summarize_api, gmail_reply_draft_api,
 )
 # llm_apps
-from service.ai.showcase.llm_apps.blog_podcast import blog_script_api, blog_to_podcast_api
-from service.ai.showcase.llm_apps.data_viz import data_viz_columns_api, data_viz_api
-from service.ai.showcase.llm_apps.tarot_chat import tarot_read_api
-from service.ai.showcase.llm_apps.music_gen_agent import music_generate_api, music_status_api
+from service.ai.showcase.blog_podcast import blog_script_api, blog_to_podcast_api
+from service.ai.showcase.data_viz import data_viz_columns_api, data_viz_api
+from service.ai.showcase.tarot_chat import tarot_read_api
+from service.ai.showcase.music_gen_agent import music_generate_api, music_status_api
 # moss-tts
 from service.ai.media.moss_tts import moss_tts_speech_api, moss_tts_status_api
 
@@ -382,11 +395,20 @@ def register_ai(router: APIRouter):
     _ai_route(router, "/ai/finetuning/chat", finetuning_chat_api, ["POST"])
     _ai_route(router, "/ai/finetuning/lora-options", list_lora_options_api, ["GET"])
     _ai_route(router, "/ai/doctor/chat", doctor_chat_api, ["POST"])
+    _ai_route(router, "/ai/doctor/history", doctor_history_api, ["GET"])
     _ai_route(router, "/ai/doctor/session/{session_id}", doctor_session_api, ["GET"], ["session_id"])
+    _ai_route(router, "/ai/doctor/session/{session_id}", doctor_delete_session_api, ["DELETE"], ["session_id"])
+    _ai_route(router, "/ai/doctor/session/{session_id}/audit", doctor_audit_api, ["POST"], ["session_id"])
     _ai_route(router, "/ai/docs/{doc_id}", service_ai_doc_api, ["GET"], ["doc_id"], {"doc_id": int})
     _ai_route(router, "/ai/data-analysis/upload", upload_data_file_api, ["POST"])
     _ai_route(router, "/ai/data-analysis/query", query_data_api, ["POST"])
+    _ai_route(router, "/ai/stock-analysis/search", search_stock_api, ["GET"])
+    _ai_route(router, "/ai/stock-analysis/query", query_prices_api, ["POST"])
+    _ai_route(router, "/ai/stock-analysis/arima", arima_forecast_api, ["POST"])
+    _ai_route(router, "/ai/stock-analysis/boll", boll_detection_api, ["POST"])
+    _ai_route(router, "/ai/stock-analysis/prophet", prophet_analysis_api, ["POST"])
     _ai_route(router, "/ai/github-chat/index", github_index_api, ["POST"])
+    _ai_route(router, "/ai/github-chat/list", github_list_api, ["GET"])
     _ai_route(router, "/ai/github-chat/ask", github_ask_api, ["POST"])
     _ai_route(router, "/ai/youtube-chat/index", youtube_index_api, ["POST"])
     _ai_route(router, "/ai/youtube-chat/ask", youtube_ask_api, ["POST"])

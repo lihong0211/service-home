@@ -68,6 +68,9 @@ data/vector_dbs/test/
 # LangGraph checkpoint 运行时状态（HITL interrupt/resume 用，勿提交）
 data/checkpoints/
 
+# RAG 参考代码/学习笔记（含硬编码 API key，勿提交）
+service/ai/demos/
+
 # Understand-Anything（提交图谱，忽略本地临时文件）
 .understand-anything/intermediate/
 .understand-anything/diff-overlay.json
