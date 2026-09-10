@@ -84,6 +84,7 @@ def stream_dashscope_sse(system_prompt: str, user_prompt: str, model: str = DEFA
                 {"role": "user", "content": user_prompt},
             ],
             stream=True,
+            incremental_output=True,
             result_format="message",
         )
     except Exception as e:  # noqa: BLE001
